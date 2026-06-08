@@ -1,0 +1,10 @@
+pyproject.toml
+setup.py
+tests/test_fused_swiglu_mlp.py
+torch-ext/fused_swiglu_mlp/__init__.py
+torch-ext/fused_swiglu_mlp/_ops.py
+torch-ext/fused_swiglu_mlp.egg-info/PKG-INFO
+torch-ext/fused_swiglu_mlp.egg-info/SOURCES.txt
+torch-ext/fused_swiglu_mlp.egg-info/dependency_links.txt
+torch-ext/fused_swiglu_mlp.egg-info/not-zip-safe
+torch-ext/fused_swiglu_mlp.egg-info/top_level.txt

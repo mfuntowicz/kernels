@@ -1,0 +1,10 @@
+{
+  "name": "fused-swiglu-mlp",
+  "id": "_fused_swiglu_mlp_xpu_6cfvnwjfilxus",
+  "version": 1,
+  "license": "Apache-2.0",
+  "python-depends": [],
+  "backend": {
+    "type": "xpu"
+  }
+}

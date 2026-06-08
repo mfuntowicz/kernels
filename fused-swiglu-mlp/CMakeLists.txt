@@ -1,0 +1,306 @@
+cmake_minimum_required(VERSION 3.26)
+
+# Set Intel SYCL compiler before project() call
+find_program(ICX_COMPILER icx)
+find_program(ICPX_COMPILER icpx)
+
+if(ICX_COMPILER OR ICPX_COMPILER)
+  set(CMAKE_C_COMPILER ${ICX_COMPILER})
+
+ if(WIN32)
+    set(CMAKE_CXX_COMPILER ${ICX_COMPILER})
+  else()
+    set(CMAKE_CXX_COMPILER ${ICPX_COMPILER})
+  endif()
+endif()
+
+project( LANGUAGES CXX)
+
+install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
+
+include(FetchContent)
+file(MAKE_DIRECTORY ${FETCHCONTENT_BASE_DIR}) # Ensure the directory exists
+message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
+
+set(HIP_SUPPORTED_ARCHS "gfx906;gfx908;gfx90a;gfx942;gfx950;gfx1030;gfx1100;gfx1101;gfx1200;gfx1201")
+
+# Make Torch CMake machinery happy. Whatever we use does not matter, since
+# we set the arches per-file later anyway.
+set(ENV{PYTORCH_ROCM_ARCH} "${HIP_SUPPORTED_ARCHS}")
+
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/kernel.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_gpu_lang.cmake)
+
+if(DEFINED Python3_EXECUTABLE)
+  # Allow passing through the interpreter (e.g. from setup.py).
+  find_package(Python3 COMPONENTS Development Development.SABIModule Interpreter)
+  if (NOT Python3_FOUND)
+    message(FATAL_ERROR "Unable to find python matching: ${EXECUTABLE}.")
+  endif()
+else()
+  find_package(Python3 REQUIRED COMPONENTS Development Development.SABIModule Interpreter)
+endif()
+
+get_gpu_lang(DETECTED_GPU_LANG)
+set(GPU_LANG "${DETECTED_GPU_LANG}" CACHE STRING "GPU language")
+gpu_lang_to_backend(BACKEND "${GPU_LANG}")
+message(STATUS "Using backend: ${BACKEND}, GPU language: ${GPU_LANG}")
+
+# Set a default CUDA architecture so that enable_language(CUDA) via
+# find_package(Torch) succeeds even in fresh build directories (e.g. pip install).
+# The actual per-file -gencode flags are set later by kernel.cmake.
+if(GPU_LANG STREQUAL "CUDA" AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES "89" CACHE STRING "Default CUDA architecture for CMake enable_language")
+endif()
+
+set(OPS_NAME "_fused_swiglu_mlp_${BACKEND}_6cfvnwjfilxus")
+
+append_cmake_prefix_path("torch" "torch.utils.cmake_prefix_path")
+
+find_package(Torch REQUIRED)
+
+run_python(TORCH_VERSION "import torch; print(torch.__version__.split('+')[0])" "Failed to get Torch version")
+
+
+
+
+option(BUILD_ALL_SUPPORTED_ARCHS "Build all supported architectures" off)
+
+if(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+ set(CUDA_DEFAULT_KERNEL_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;11.0;12.0;12.1+PTX")
+elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+ set(CUDA_DEFAULT_KERNEL_ARCHS "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0+PTX")
+else()
+  set(CUDA_DEFAULT_KERNEL_ARCHS "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0+PTX")
+endif()
+
+# Basic checks for each GPU language.
+if(GPU_LANG STREQUAL "CUDA")
+  if(NOT CUDA_FOUND)
+    message(FATAL_ERROR "GPU language is set to CUDA, but cannot find CUDA toolkit")
+  endif()
+
+  
+  
+  # This clears out -gencode arguments from `CMAKE_CUDA_FLAGS`, which we need
+  # to set our own set of capabilities.
+  clear_gencode_flags()
+
+  # Get the capabilities without +PTX suffixes, so that we can use them as
+  # the target archs in the loose intersection with a kernel's capabilities.
+  cuda_remove_ptx_suffixes(CUDA_ARCHS "${CUDA_DEFAULT_KERNEL_ARCHS}")
+  message(STATUS "CUDA base archs used for intersection with kernel archs: ${CUDA_ARCHS}")
+
+  if(BUILD_ALL_SUPPORTED_ARCHS)
+    set(CUDA_KERNEL_ARCHS "${CUDA_DEFAULT_KERNEL_ARCHS}")
+  else()
+    try_run_python(CUDA_KERNEL_ARCHS SUCCESS "import torch; cc=torch.cuda.get_device_capability(); print(f\"{cc[0]}.{cc[1]}\")" "Failed to get CUDA capability")
+    if(NOT SUCCESS)
+      message(WARNING "Failed to detect CUDA capability, using default capabilities.")
+      set(CUDA_KERNEL_ARCHS "${CUDA_DEFAULT_KERNEL_ARCHS}")
+    endif()
+  endif()
+
+  message(STATUS "Default CUDA kernel architectures: ${CUDA_KERNEL_ARCHS}")
+
+  if(NVCC_THREADS AND GPU_LANG STREQUAL "CUDA")
+    message(STATUS "Using nvcc with: -threads=${NVCC_THREADS}")
+    list(APPEND GPU_FLAGS "--threads=${NVCC_THREADS}")
+  endif()
+
+  # TODO: deprecate one of these settings.
+  add_compile_definitions(USE_CUDA=1)
+  add_compile_definitions(CUDA_KERNEL)
+elseif(GPU_LANG STREQUAL "HIP")
+  if(NOT HIP_FOUND)
+    message(FATAL_ERROR "GPU language is set to HIP, but cannot find ROCm toolkit")
+  endif()
+
+  # Importing torch recognizes and sets up some HIP/ROCm configuration but does
+  # not let cmake recognize .hip files. In order to get cmake to understand the
+  # .hip extension automatically, HIP must be enabled explicitly.
+  enable_language(HIP)
+
+  set(ROCM_ARCHS ${HIP_SUPPORTED_ARCHS})
+  message(STATUS "ROCM supported target architectures: ${ROCM_ARCHS}")
+
+  # TODO: deprecate one of these settings.
+  add_compile_definitions(USE_ROCM=1)
+  add_compile_definitions(ROCM_KERNEL)
+elseif(GPU_LANG STREQUAL "CPU")
+  add_compile_definitions(CPU_KERNEL)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
+elseif(GPU_LANG STREQUAL "METAL")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS deployment version")
+  enable_language(C OBJC OBJCXX)
+
+  add_compile_definitions(METAL_KERNEL)
+
+  # Initialize lists for Metal shader sources and their include directories
+  set(ALL_METAL_SOURCES)
+  set(METAL_INCLUDE_DIRS)
+elseif(GPU_LANG STREQUAL "SYCL")
+  if(NOT ICX_COMPILER AND NOT ICPX_COMPILER)
+    message(FATAL_ERROR "Intel SYCL C++ compiler (icpx) and/or C compiler (icx) not found. Please install Intel oneAPI toolkit.")
+  endif()
+
+  execute_process(
+    COMMAND ${ICPX_COMPILER} --version
+    OUTPUT_VARIABLE ICPX_VERSION_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  string(REGEX MATCH "[0-9]+\\.[0-9]+" DPCPP_VERSION "${ICPX_VERSION_OUTPUT}")
+  set(DPCPP_VERSION "${DPCPP_VERSION}" CACHE STRING "DPCPP major.minor version")
+
+  # On Windows, use icx (MSVC-compatible) for C++ to work with Ninja generator
+  # On Linux, use icpx (GNU-compatible) for C++
+  if(WIN32)
+    message(STATUS "Using Intel SYCL C++ compiler: ${ICX_COMPILER} and C compiler: ${ICX_COMPILER} Version: ${DPCPP_VERSION} (Windows MSVC-compatible mode)")
+  else()
+    message(STATUS "Using Intel SYCL C++ compiler: ${ICPX_COMPILER} and C compiler: ${ICX_COMPILER} Version: ${DPCPP_VERSION}")
+  endif()
+
+
+  set(sycl_link_flags "-Wl,-z,noexecstack;-fsycl;--offload-compress;-fsycl-targets=spir64_gen,spir64;-Xs;-device pvc,xe-lpg,ats-m150 -options ' -cl-intel-enable-auto-large-GRF-mode -cl-poison-unsupported-fp64-kernels -cl-intel-greater-than-4GB-buffer-required';")
+  set(sycl_flags "-fPIC;-fsycl;-fhonor-nans;-fhonor-infinities;-fno-associative-math;-fno-approx-func;-fno-sycl-instrument-device-code;--offload-compress;-fsycl-targets=spir64_gen,spir64;")
+  set(GPU_FLAGS "${sycl_flags}")
+  set(GPU_ARCHES "")
+
+
+  add_compile_definitions(XPU_KERNEL)
+  add_compile_definitions(USE_XPU)
+else()
+  message(FATAL_ERROR "Unsupported GPU language: ${GPU_LANG}")
+endif()
+
+# Initialize SRC list for kernel and binding sources
+set(SRC "")
+
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/build-variants.cmake)
+
+# Generate build variant name.
+if(GPU_LANG STREQUAL "CUDA")
+  generate_build_name(BUILD_VARIANT_NAME "${TORCH_VERSION}" "cuda" "${CUDA_VERSION}" ${_STABLE_ABI_ARG})
+elseif(GPU_LANG STREQUAL "HIP")
+  run_python(ROCM_VERSION "import torch.version; print(torch.version.hip.split('.')[0] + '.' + torch.version.hip.split('.')[1])" "Failed to get ROCm version")
+  generate_build_name(BUILD_VARIANT_NAME "${TORCH_VERSION}" "rocm" "${ROCM_VERSION}" ${_STABLE_ABI_ARG})
+elseif(GPU_LANG STREQUAL "SYCL")
+  generate_build_name(BUILD_VARIANT_NAME "${TORCH_VERSION}" "xpu" "${DPCPP_VERSION}" ${_STABLE_ABI_ARG})
+elseif(GPU_LANG STREQUAL "METAL")
+  generate_build_name(BUILD_VARIANT_NAME "${TORCH_VERSION}" "metal" "" ${_STABLE_ABI_ARG})
+elseif(GPU_LANG STREQUAL "CPU")
+  generate_build_name(BUILD_VARIANT_NAME "${TORCH_VERSION}" "cpu" "" ${_STABLE_ABI_ARG})
+else()
+  message(FATAL_ERROR "Cannot generate build name for unknown GPU_LANG: ${GPU_LANG}")
+endif()
+
+configure_file(
+  ${CMAKE_CURRENT_LIST_DIR}/cmake/_ops.py.in
+  ${CMAKE_CURRENT_SOURCE_DIR}/torch-ext/fused_swiglu_mlp/_ops.py
+  @ONLY
+)
+if(GPU_LANG STREQUAL "CUDA")
+  message(STATUS "Including CUTLASS dependency")
+
+find_package(NvidiaCutlass)
+
+if (NOT NvidiaCutlass_FOUND)
+  set(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
+
+# Set CUTLASS_REVISION manually -- its revision detection doesn't work in this case.
+  set(CUTLASS_REVISION "v4.0.0" CACHE STRING "CUTLASS revision to use")
+
+
+# Use the specified CUTLASS source directory for compilation if CUTLASS_SRC_DIR is provided
+  if (DEFINED ENV{CUTLASS_SRC_DIR})
+    set(CUTLASS_SRC_DIR $ENV{CUTLASS_SRC_DIR})
+  endif()
+
+  if(CUTLASS_SRC_DIR)
+    if(NOT IS_ABSOLUTE CUTLASS_SRC_DIR)
+      get_filename_component(CUTLASS_SRC_DIR "${CUTLASS_SRC_DIR}" ABSOLUTE)
+    endif()
+    message(STATUS "The CUTLASS_SRC_DIR is set, using ${CUTLASS_SRC_DIR} for compilation")
+    FetchContent_Declare(cutlass SOURCE_DIR ${CUTLASS_SRC_DIR})
+  else()
+    FetchContent_Declare(
+        cutlass
+        GIT_REPOSITORY https://github.com/nvidia/cutlass.git
+        GIT_TAG ${CUTLASS_REVISION}
+        GIT_PROGRESS TRUE
+
+        # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
+        # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
+        # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
+        GIT_SHALLOW TRUE
+    )
+  endif()
+  FetchContent_MakeAvailable(cutlass)
+
+  include_directories(${CUTLASS_INCLUDE_DIR})
+  include_directories(${CUTLASS_INCLUDE_DIR}/../tools/util/include)
+else()
+  message(STATUS "Using system cutlass with version: ${NvidiaCutlass_VERSION}")
+endif(NOT NvidiaCutlass_FOUND)
+
+endif(GPU_LANG STREQUAL "CUDA")
+
+if(GPU_LANG STREQUAL "CUDA")
+  get_torch_gpu_compiler_flags(TORCH_GPU_FLAGS ${GPU_LANG})
+  list(APPEND GPU_FLAGS ${TORCH_GPU_FLAGS})
+endif()
+
+set(TORCH_fused-swiglu-mlp_SRC
+  torch-ext/torch_binding.cpp torch-ext/torch_binding.h
+)
+
+
+list(APPEND SRC "${TORCH_fused-swiglu-mlp_SRC}")
+if(GPU_LANG STREQUAL "CUDA")
+cuda_kernel_component(SRC
+  NAME fused_swiglu_mlp
+  SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
+          )
+endif()
+# Include Metal shader compilation utilities if needed
+if(GPU_LANG STREQUAL "METAL")
+    include(${CMAKE_CURRENT_LIST_DIR}/cmake/compile-metal.cmake)
+endif()
+
+# Define the extension target with unified parameters
+define_gpu_extension_target(
+  ${OPS_NAME}
+  ${OPS_NAME}
+  DESTINATION ${OPS_NAME}
+  LANGUAGE ${GPU_LANG}
+  SOURCES ${SRC}
+  COMPILE_FLAGS ${GPU_FLAGS}
+  ARCHITECTURES ${GPU_ARCHES}
+  USE_SABI 3
+  WITH_SOABI)
+
+if(GPU_LANG STREQUAL "SYCL")
+    target_link_options(${OPS_NAME} PRIVATE ${sycl_link_flags})
+    target_link_libraries(${OPS_NAME} PRIVATE dnnl)
+endif()
+
+# Compile Metal shaders if any were found
+if(GPU_LANG STREQUAL "METAL")
+    if(ALL_METAL_SOURCES)
+        compile_metal_shaders(${OPS_NAME} "${ALL_METAL_SOURCES}" "${METAL_INCLUDE_DIRS}")
+    endif()
+endif()
+
+
+# Add kernels_install target for huggingface/kernels library layout
+add_kernels_install_target(${OPS_NAME} "fused_swiglu_mlp" "${BUILD_VARIANT_NAME}"
+    DATA_EXTENSIONS ""
+    GPU_ARCHS "${ALL_GPU_ARCHS}")
+
+# Add local_install target for local development with get_local_kernel()
+add_local_install_target(${OPS_NAME} "fused_swiglu_mlp" "${BUILD_VARIANT_NAME}"
+    DATA_EXTENSIONS ""
+    GPU_ARCHS "${ALL_GPU_ARCHS}")

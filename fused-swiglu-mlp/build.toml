@@ -1,0 +1,21 @@
+[general]
+name = "fused-swiglu-mlp"
+license = "Apache-2.0"
+backends = [
+  "cuda",
+]
+version = 1
+
+[general.hub]
+repo-id = "kernels-community/fused-swiglu-mlp"
+
+[torch]
+src = [
+  "torch-ext/torch_binding.cpp",
+  "torch-ext/torch_binding.h",
+]
+
+[kernel.fused_swiglu_mlp]
+backend = "cuda"
+depends = ["cutlass_4_0", "torch"]
+src = ["fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"]
