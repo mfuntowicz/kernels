@@ -58,7 +58,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
 
     using EVT = SwigluEVT<ElementD, ElementAux>;
 
-    using CollectiveEpilogue = cutlass::epilogue::collective::CollectiveBuilder<
+    using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
         cutlass::arch::Sm90,
         cutlass::arch::OpClassTensorOp,
         TileShapeMNK,
@@ -75,7 +75,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
     using StageCount = cutlass::gemm::collective::StageCountAutoCarveout<
         static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>;
 
-    using CollectiveMainloop = cutlass::gemm::collective::CollectiveBuilder<
+    using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
         cutlass::arch::Sm90,
         cutlass::arch::OpClassTensorOp,
         ElementA, LayoutA, AlignmentA,
