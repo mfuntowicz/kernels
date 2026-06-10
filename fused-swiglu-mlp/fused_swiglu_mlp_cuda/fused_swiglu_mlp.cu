@@ -254,16 +254,36 @@ cutlass::Status launch_fused_swiglu_gemm(
     GemmDevice gemm_op;
 
     cutlass::Status status = gemm_op.can_implement(args);
-    if (status != cutlass::Status::kSuccess) return status;
+    if (status != cutlass::Status::kSuccess) {
+        TORCH_CHECK(false, "CUTLASS can_implement failed: ", static_cast<int>(status));
+    }
 
     auto* allocator = c10::cuda::CUDACachingAllocator::get();
     const auto workspace_size = GemmDevice::get_workspace_size(args);
     const auto workspace = allocator->allocate(workspace_size);
 
-    status = gemm_op.initialize(args, workspace.get(), stream);
-    if (status != cutlass::Status::kSuccess) return status;
+    cudaError_t cuda_err = cudaGetLastError();
+    if (cuda_err != cudaSuccess) {
+        TORCH_CHECK(false, "CUDA error before initialize: ", cudaGetErrorString(cuda_err));
+    }
 
-    return gemm_op.run(stream);
+    status = gemm_op.initialize(args, workspace.get(), stream);
+    if (status != cutlass::Status::kSuccess) {
+        cuda_err = cudaGetLastError();
+        TORCH_CHECK(false, "CUTLASS initialize failed: ", static_cast<int>(status),
+                    ", CUDA error: ", cudaGetErrorString(cuda_err),
+                    ", workspace_size: ", workspace_size,
+                    ", smem_size: ", GemmKernel::SharedStorageSize);
+    }
+
+    status = gemm_op.run(stream);
+    if (status != cutlass::Status::kSuccess) {
+        cuda_err = cudaGetLastError();
+        TORCH_CHECK(false, "CUTLASS run failed: ", static_cast<int>(status),
+                    ", CUDA error: ", cudaGetErrorString(cuda_err));
+    }
+
+    return status;
 }
 
 } // namespace detail
