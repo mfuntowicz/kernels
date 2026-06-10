@@ -37,7 +37,7 @@ template <typename ElementAB, typename ElementOut>
 struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative> {
     using ElementA = ElementAB;
     using ElementB = ElementAB;
-    using ElementC = ElementOut;
+    using ElementC = void;
     using ElementD = ElementOut;
     using ElementAux = ElementOut;
     using ElementAccum = float;
@@ -50,7 +50,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
 
     static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
     static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-    static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+    static constexpr int AlignmentC = 1;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
     using TileShapeMNK = cute::Shape<cute::_128, cute::_128, cute::_64>;
@@ -110,7 +110,7 @@ template <typename ElementAB, typename ElementOut>
 struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm> {
     using ElementA = ElementAB;
     using ElementB = ElementAB;
-    using ElementC = ElementOut;
+    using ElementC = void;
     using ElementD = ElementOut;
     using ElementAux = ElementOut;
     using ElementAccum = float;
@@ -123,7 +123,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epi
 
     static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
     static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-    static constexpr int AlignmentC = 128 / cutlass::sizeof_bits<ElementC>::value;
+    static constexpr int AlignmentC = 1;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
     using TileShapeMNK = cute::Shape<cute::_256, cute::_128, cute::_64>;
@@ -214,8 +214,6 @@ cutlass::Status launch_fused_swiglu_gemm(
         typename GemmKernel::StrideA{}, cute::make_shape(m, k, 1));
     auto stride_B = cutlass::make_cute_packed_stride(
         typename GemmKernel::StrideB{}, cute::make_shape(n, k, 1));
-    auto stride_C = cutlass::make_cute_packed_stride(
-        typename GemmKernel::StrideC{}, cute::make_shape(m, n, 1));
     auto stride_D = cutlass::make_cute_packed_stride(
         typename GemmKernel::StrideD{}, cute::make_shape(m, n, 1));
 
@@ -229,14 +227,14 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     using EVT = typename GemmKernel::CollectiveEpilogue::FusionCallbacks;
     typename EVT::Arguments evt_args = {
-        {},  // Sm90AccFetch: empty args
+        {},
         {ptr_aux, typename GemmDevice::GemmKernel::CollectiveEpilogue::ElementD(0), stride_aux},
-        {}   // Sm90Compute<SwigluOp>: empty args
+        {}
     };
 
     typename GemmKernel::CollectiveEpilogue::Arguments epilogue_args = {
         evt_args,
-        nullptr, stride_C,
+        nullptr, {},
         ptr_D, stride_D
     };
 
