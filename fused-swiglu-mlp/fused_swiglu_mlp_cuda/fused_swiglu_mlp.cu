@@ -181,10 +181,10 @@ __global__ void swiglu_elementwise_kernel(
     Element* __restrict__ output,
     Element const* __restrict__ gate,
     Element const* __restrict__ up,
-    int64_t total_elements
+    const int64_t numel
 ) {
     int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < total_elements) {
+    if (idx < numel) {
         const auto g = static_cast<float>(gate[idx]);
         const auto u = static_cast<float>(up[idx]);
         const float silu = g / (1.0f + expf(-g));
@@ -198,7 +198,7 @@ cutlass::Status launch_fused_swiglu_gemm(
     typename GemmDevice::GemmKernel::CollectiveMainloop::ElementB const* ptr_B,
     typename GemmDevice::GemmKernel::CollectiveEpilogue::ElementD* ptr_D,
     typename GemmDevice::GemmKernel::CollectiveEpilogue::ElementD const* ptr_aux,
-    int64_t M, int64_t N, int64_t K,
+    const int64_t M, const int64_t N, const int64_t K,
     cudaStream_t stream
 ) {
     using GemmKernel = GemmDevice::GemmKernel;
@@ -258,9 +258,9 @@ cutlass::Status launch_fused_swiglu_gemm(
     cutlass::Status status = gemm_op.can_implement(args);
     if (status != cutlass::Status::kSuccess) return status;
 
-    size_t workspace_size = GemmDevice::get_workspace_size(args);
-    c10::Allocator* allocator = c10::cuda::CUDACachingAllocator::get();
-    at::DataPtr workspace = allocator->allocate(workspace_size);
+    auto* allocator = c10::cuda::CUDACachingAllocator::get();
+    const auto workspace_size = GemmDevice::get_workspace_size(args);
+    const auto workspace = allocator->allocate(workspace_size);
 
     status = gemm_op.initialize(args, workspace.get(), stream);
     if (status != cutlass::Status::kSuccess) return status;
@@ -276,7 +276,7 @@ cutlass::Status run_swiglu_gemm(
     ElementAB const* ptr_B,
     ElementOut* ptr_D,
     ElementOut const* ptr_aux,
-    int64_t M, int64_t N, int64_t K,
+    const int64_t M, const int64_t N, const int64_t K,
     cudaStream_t stream
 ) {
     using Gemm = typename detail::FusedSwigluGemm<ElementAB, ElementOut, ArchTag, EpilogueSchedule>::GemmDevice;
@@ -289,11 +289,11 @@ cutlass::Status run_swiglu_gemm(
 template <typename Element>
 void run_swiglu_elementwise(
     Element* output, Element const* gate, Element const* up,
-    int64_t M, int64_t N, cudaStream_t stream
+    const int64_t M, const int64_t N, cudaStream_t stream
 ) {
-    int64_t total = M * N;
-    int64_t block_size = 256;
-    int64_t grid_size = (total + block_size - 1) / block_size;
+    constexpr auto block_size = 256l;
+    const auto total = M * N;
+    const auto grid_size = (total + block_size - 1) / block_size;
     detail::swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(
         output, gate, up, total
     );
@@ -322,22 +322,19 @@ torch::Tensor fused_swiglu_mlp(
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    int64_t M = x.size(0);
-    int64_t N = w_gate.size(0);
-    int64_t K = x.size(1);
+    const auto M = x.size(0);
+    const auto N = w_gate.size(0);
+    const auto K = x.size(1);
 
     torch::Tensor out = torch::empty({M, N}, x.options());
 
-    int cc_major = at::cuda::getCurrentDeviceProperties()->major;
-    int cc_minor = at::cuda::getCurrentDeviceProperties()->minor;
-    int cc = cc_major * 10 + cc_minor;
+    const auto cc_major = at::cuda::getCurrentDeviceProperties()->major;
+    const auto cc_minor = at::cuda::getCurrentDeviceProperties()->minor;
+    const auto cc = cc_major * 10 + cc_minor;
 
-    bool use_cutlass_fusion = (cc >= 90) && (x.scalar_type() != c10::kFloat);
-
-    if (use_cutlass_fusion) {
-        torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
-
-        cutlass::Status status = cutlass::Status::kErrorInternal;
+    if (bool use_cutlass_fusion = (cc >= 90) && (x.scalar_type() != c10::kFloat)) {
+        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
+        auto status = cutlass::Status::kErrorInternal;
 
         if (x.scalar_type() == c10::kBFloat16) {
             using ElementAB = cutlass::bfloat16_t;
@@ -397,10 +394,10 @@ torch::Tensor fused_swiglu_mlp(
 #endif
         }
 
-        TORCH_CHECK(status == cutlass::Status::kSuccess, "CUTLASS fused SwiGLU GEMM failed: ", int(status));
+        TORCH_CHECK(status == cutlass::Status::kSuccess, "CUTLASS fused SwiGLU GEMM failed: ", static_cast<int>(status));
     } else {
-        torch::Tensor gate = at::matmul(x, w_gate.transpose(0, 1));
-        torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
+        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
+        const auto up = at::matmul(x, w_up.transpose(0, 1));
 
         at::silu_out(out, gate);
         out.mul_(up);
