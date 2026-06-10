@@ -254,36 +254,16 @@ cutlass::Status launch_fused_swiglu_gemm(
     GemmDevice gemm_op;
 
     cutlass::Status status = gemm_op.can_implement(args);
-    if (status != cutlass::Status::kSuccess) {
-        TORCH_CHECK(false, "CUTLASS can_implement failed: ", static_cast<int>(status));
-    }
+    if (status != cutlass::Status::kSuccess) return status;
 
     auto* allocator = c10::cuda::CUDACachingAllocator::get();
     const auto workspace_size = GemmDevice::get_workspace_size(args);
     const auto workspace = allocator->allocate(workspace_size);
 
-    cudaError_t cuda_err = cudaGetLastError();
-    if (cuda_err != cudaSuccess) {
-        TORCH_CHECK(false, "CUDA error before initialize: ", cudaGetErrorString(cuda_err));
-    }
-
     status = gemm_op.initialize(args, workspace.get(), stream);
-    if (status != cutlass::Status::kSuccess) {
-        cuda_err = cudaGetLastError();
-        TORCH_CHECK(false, "CUTLASS initialize failed: ", static_cast<int>(status),
-                    ", CUDA error: ", cudaGetErrorString(cuda_err),
-                    ", workspace_size: ", workspace_size,
-                    ", smem_size: ", GemmKernel::SharedStorageSize);
-    }
+    if (status != cutlass::Status::kSuccess) return status;
 
-    status = gemm_op.run(stream);
-    if (status != cutlass::Status::kSuccess) {
-        cuda_err = cudaGetLastError();
-        TORCH_CHECK(false, "CUTLASS run failed: ", static_cast<int>(status),
-                    ", CUDA error: ", cudaGetErrorString(cuda_err));
-    }
-
-    return status;
+    return gemm_op.run(stream);
 }
 
 } // namespace detail
@@ -352,67 +332,78 @@ torch::Tensor fused_swiglu_mlp(
 
     if (bool use_cutlass_fusion = (cc >= 90) && (x.scalar_type() != c10::kFloat)) {
         const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
-        auto status = cutlass::Status::kErrorInternal;
 
-        if (x.scalar_type() == c10::kBFloat16) {
-            using ElementAB = cutlass::bfloat16_t;
-            using ElementOut = cutlass::bfloat16_t;
+        auto try_cutlass = [&]() -> bool {
+            cutlass::Status status = cutlass::Status::kErrorInternal;
 
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-            if (cc >= 100) {
-                status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-                    static_cast<ElementAB const*>(x.data_ptr()),
-                    static_cast<ElementAB const*>(w_gate.data_ptr()),
-                    static_cast<ElementOut*>(out.data_ptr()),
-                    static_cast<ElementOut const*>(up.data_ptr()),
-                    M, N, K, stream
-                );
-            } else
-#endif
-#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-            {
-                status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-                    static_cast<ElementAB const*>(x.data_ptr()),
-                    static_cast<ElementAB const*>(w_gate.data_ptr()),
-                    static_cast<ElementOut*>(out.data_ptr()),
-                    static_cast<ElementOut const*>(up.data_ptr()),
-                    M, N, K, stream
-                );
-            }
-#else
-            { TORCH_CHECK(false, "SM90 CUTLASS not supported in this build"); }
-#endif
-        } else if (x.scalar_type() == c10::kHalf) {
-            using ElementAB = cutlass::half_t;
-            using ElementOut = cutlass::half_t;
+            if (x.scalar_type() == c10::kBFloat16) {
+                using ElementAB = cutlass::bfloat16_t;
+                using ElementOut = cutlass::bfloat16_t;
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-            if (cc >= 100) {
-                status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-                    static_cast<ElementAB const*>(x.data_ptr()),
-                    static_cast<ElementAB const*>(w_gate.data_ptr()),
-                    static_cast<ElementOut*>(out.data_ptr()),
-                    static_cast<ElementOut const*>(up.data_ptr()),
-                    M, N, K, stream
-                );
-            } else
+                if (cc >= 100) {
+                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
+                        static_cast<ElementAB const*>(x.data_ptr()),
+                        static_cast<ElementAB const*>(w_gate.data_ptr()),
+                        static_cast<ElementOut*>(out.data_ptr()),
+                        static_cast<ElementOut const*>(up.data_ptr()),
+                        M, N, K, stream
+                    );
+                } else
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-            {
-                status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-                    static_cast<ElementAB const*>(x.data_ptr()),
-                    static_cast<ElementAB const*>(w_gate.data_ptr()),
-                    static_cast<ElementOut*>(out.data_ptr()),
-                    static_cast<ElementOut const*>(up.data_ptr()),
-                    M, N, K, stream
-                );
-            }
+                {
+                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+                        static_cast<ElementAB const*>(x.data_ptr()),
+                        static_cast<ElementAB const*>(w_gate.data_ptr()),
+                        static_cast<ElementOut*>(out.data_ptr()),
+                        static_cast<ElementOut const*>(up.data_ptr()),
+                        M, N, K, stream
+                    );
+                }
 #else
-            { TORCH_CHECK(false, "SM90 CUTLASS not supported in this build"); }
+                { return false; }
 #endif
+            } else if (x.scalar_type() == c10::kHalf) {
+                using ElementAB = cutlass::half_t;
+                using ElementOut = cutlass::half_t;
+
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+                if (cc >= 100) {
+                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
+                        static_cast<ElementAB const*>(x.data_ptr()),
+                        static_cast<ElementAB const*>(w_gate.data_ptr()),
+                        static_cast<ElementOut*>(out.data_ptr()),
+                        static_cast<ElementOut const*>(up.data_ptr()),
+                        M, N, K, stream
+                    );
+                } else
+#endif
+#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
+                {
+                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+                        static_cast<ElementAB const*>(x.data_ptr()),
+                        static_cast<ElementAB const*>(w_gate.data_ptr()),
+                        static_cast<ElementOut*>(out.data_ptr()),
+                        static_cast<ElementOut const*>(up.data_ptr()),
+                        M, N, K, stream
+                    );
+                }
+#else
+                { return false; }
+#endif
+            }
+
+            return status == cutlass::Status::kSuccess;
+        };
+
+        if (try_cutlass()) {
+            return out;
         }
 
-        TORCH_CHECK(status == cutlass::Status::kSuccess, "CUTLASS fused SwiGLU GEMM failed: ", static_cast<int>(status));
+        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
+        at::silu_out(out, gate);
+        out.mul_(up);
     } else {
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         const auto up = at::matmul(x, w_up.transpose(0, 1));
