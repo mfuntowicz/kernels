@@ -96,10 +96,10 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
 
     using GemmDevice = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
 
-    using StrideA = GemmKernel::StrideA;
-    using StrideB = GemmKernel::StrideB;
-    using StrideC = GemmKernel::StrideC;
-    using StrideD = GemmKernel::StrideD;
+    using StrideA = typename GemmKernel::StrideA;
+    using StrideB = typename GemmKernel::StrideB;
+    using StrideC = typename GemmKernel::StrideC;
+    using StrideD = typename GemmKernel::StrideD;
 };
 
 #endif
@@ -201,8 +201,8 @@ cutlass::Status launch_fused_swiglu_gemm(
     const int64_t M, const int64_t N, const int64_t K,
     cudaStream_t stream
 ) {
-    using GemmKernel = GemmDevice::GemmKernel;
-    using ProblemShape = GemmKernel::ProblemShape;
+    using GemmKernel = typename GemmDevice::GemmKernel;
+    using ProblemShape = typename GemmKernel::ProblemShape;
 
     ProblemShape problem_shape = ProblemShape{M, N, K, static_cast<int64_t>(1)};
 
