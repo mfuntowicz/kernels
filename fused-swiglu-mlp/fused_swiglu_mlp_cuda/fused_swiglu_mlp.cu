@@ -6,7 +6,6 @@
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
-#include <cutlass/gemm/gemm.h>
 #include <cutlass/gemm/kernel/gemm_universal.hpp>
 #include <cutlass/gemm/collective/collective_builder.hpp>
 #include <cutlass/epilogue/collective/collective_builder.hpp>
@@ -210,20 +209,15 @@ cutlass::Status launch_fused_swiglu_gemm(
     const auto n = static_cast<int32_t>(N);
     const auto k = static_cast<int32_t>(K);
 
-    auto stride_A = cutlass::make_cute_packed_stride(
-        typename GemmKernel::StrideA{}, cute::make_shape(m, k, 1));
-    auto stride_B = cutlass::make_cute_packed_stride(
-        typename GemmKernel::StrideB{}, cute::make_shape(n, k, 1));
-    auto stride_D = cutlass::make_cute_packed_stride(
-        typename GemmKernel::StrideD{}, cute::make_shape(m, n, 1));
+    auto stride_A = cutlass::make_cute_packed_stride(typename GemmKernel::StrideA{}, cute::make_shape(m, k, 1));
+    auto stride_B = cutlass::make_cute_packed_stride(typename GemmKernel::StrideB{}, cute::make_shape(n, k, 1));
+    auto stride_D = cutlass::make_cute_packed_stride(typename GemmKernel::StrideD{}, cute::make_shape(m, n, 1));
 
     auto stride_aux = cutlass::make_cute_packed_stride(
-        cute::Stride<int64_t, cute::Int<1>, int64_t>{}, cute::make_shape(m, n, 1));
+        cute::Stride<int64_t, cute::Int<1>, int64_t>{}, cute::make_shape(m, n, 1)
+    );
 
-    typename GemmKernel::CollectiveMainloop::Arguments mainloop_args = {
-        ptr_A, stride_A,
-        ptr_B, stride_B
-    };
+    typename GemmKernel::CollectiveMainloop::Arguments mainloop_args = { ptr_A, stride_A, ptr_B, stride_B };
 
     using EVT = typename GemmKernel::CollectiveEpilogue::FusionCallbacks;
     typename EVT::Arguments evt_args = {
@@ -292,16 +286,10 @@ void run_swiglu_elementwise(
     constexpr auto block_size = 256l;
     const auto total = M * N;
     const auto grid_size = (total + block_size - 1) / block_size;
-    detail::swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(
-        output, gate, up, total
-    );
+    detail::swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(output, gate, up, total);
 }
 
-torch::Tensor fused_swiglu_mlp(
-    torch::Tensor const& x,
-    torch::Tensor const& w_gate,
-    torch::Tensor const& w_up
-) {
+torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_gate, torch::Tensor const& w_up) {
     TORCH_CHECK(x.device().is_cuda(), "x must be a CUDA tensor");
     TORCH_CHECK(w_gate.device().is_cuda(), "w_gate must be a CUDA tensor");
     TORCH_CHECK(w_up.device().is_cuda(), "w_up must be a CUDA tensor");
@@ -334,7 +322,7 @@ torch::Tensor fused_swiglu_mlp(
         const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
 
         auto try_cutlass = [&]() -> bool {
-            cutlass::Status status = cutlass::Status::kErrorInternal;
+            auto status = cutlass::Status::kErrorInternal;
 
             if (x.scalar_type() == c10::kBFloat16) {
                 using ElementAB = cutlass::bfloat16_t;
@@ -397,9 +385,8 @@ torch::Tensor fused_swiglu_mlp(
             return status == cutlass::Status::kSuccess;
         };
 
-        if (try_cutlass()) {
+        if (try_cutlass())
             return out;
-        }
 
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         at::silu_out(out, gate);
