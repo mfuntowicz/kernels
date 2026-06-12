@@ -30,7 +30,7 @@ print(f"Using device: {device}")
 if device.type == "cuda":
     cc = torch.cuda.get_device_capability()
     print(f"GPU compute capability: {cc[0]}.{cc[1]}")
-    if cc[0] >= 90:
+    if cc[0] >= 9:
         print("CUTLASS fused SwiGLU path will be used")
     else:
         print("Elementwise fallback path will be used (fused path requires SM90+)")

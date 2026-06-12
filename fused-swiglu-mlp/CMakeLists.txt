@@ -260,11 +260,16 @@ set(TORCH_fused-swiglu-mlp_SRC
 
 list(APPEND SRC "${TORCH_fused-swiglu-mlp_SRC}")
 if(GPU_LANG STREQUAL "CUDA")
-cuda_kernel_component(SRC
-  NAME fused_swiglu_mlp
-  SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
-  CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a"
-          )
+  if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
+    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a;12.0a")
+  else()
+    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
+  endif()
+  cuda_kernel_component(SRC
+    NAME fused_swiglu_mlp
+    SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
+    CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
+  )
 endif()
 # Include Metal shader compilation utilities if needed
 if(GPU_LANG STREQUAL "METAL")
