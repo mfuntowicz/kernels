@@ -251,11 +251,6 @@ endif(GPU_LANG STREQUAL "CUDA")
 if(GPU_LANG STREQUAL "CUDA")
   get_torch_gpu_compiler_flags(TORCH_GPU_FLAGS ${GPU_LANG})
   list(APPEND GPU_FLAGS ${TORCH_GPU_FLAGS})
-  # CUTLASS 4.0 requires C++20.  PyTorch's COMMON_NVCC_FLAGS sets -std=c++17.
-  # Replace it with C++20, which also resolves GCC 15 template-body errors in
-  # ATen/core/List_inl.h (P0634R3 makes "typename decltype(...)::member" valid).
-  list(REMOVE_ITEM GPU_FLAGS "-std=c++17")
-  list(APPEND GPU_FLAGS "-std=c++20")
 endif()
 
 set(TORCH_fused-swiglu-mlp_SRC
@@ -274,6 +269,12 @@ if(GPU_LANG STREQUAL "CUDA")
     NAME fused_swiglu_mlp
     SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
     CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
+    # CUTLASS 4.0 requires C++20 for device code while PyTorch's ABI is C++17.
+    # -std=c++20: tells NVCC to compile device code as C++20 (overrides the
+    #   global -std=c++17 from PyTorch for device compilation).
+    # -Xcompiler=-std=c++17: tells the HOST compiler (within NVCC) to use
+    #   C++17, matching PyTorch's ABI (FunctionSchema, RegisterOrVerify, etc.)
+    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
   )
 endif()
 # Include Metal shader compilation utilities if needed
@@ -293,9 +294,12 @@ define_gpu_extension_target(
   USE_SABI 3
   WITH_SOABI)
 
-# CUTLASS 4.0 requires C++20; override the PyTorch-forced C++17.
+# CUTLASS 4.0 requires C++20 for device code, but PyTorch's C++ ABI was
+# built with C++17.  The .cu file uses -std=c++20 for device and
+# -Xcompiler=-std=c++17 for host (set per-file above).  Pure .cpp files
+# must also use C++17 to match PyTorch's ABI.
 if(GPU_LANG STREQUAL "CUDA")
-  set_property(TARGET ${OPS_NAME} PROPERTY CXX_STANDARD 20)
+  set_property(TARGET ${OPS_NAME} PROPERTY CXX_STANDARD 17)
 endif()
 
 if(GPU_LANG STREQUAL "SYCL")
