@@ -269,6 +269,10 @@ if(GPU_LANG STREQUAL "CUDA")
     NAME fused_swiglu_mlp
     SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
     CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
+    # GCC 15+ enables -Wtemplate-body by default; PyTorch 2.10 headers trip
+    # "need 'typename' before 'decltype'" in ATen/core/List_inl.h.
+    # Harmless on older GCC (silently ignored for -Wno-*)
+    CUDA_FLAGS "-Xcompiler=-Wno-template-body"
   )
 endif()
 # Include Metal shader compilation utilities if needed
