@@ -8,13 +8,9 @@
 # ///
 
 import platform
-from pathlib import Path
 
-import kernels
 import torch
 import torch.nn.functional as F
-
-kernel = kernels.get_local_kernel(Path("torch-ext"), "cuda")
 
 if platform.system() == "Darwin":
     device = torch.device("mps")
@@ -43,7 +39,9 @@ for M, N, K in SIZES:
     w_gate = torch.randn(N, K, dtype=torch.bfloat16, device=device)
     w_up = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 
-    result = kernel.fused_swiglu_mlp(x, w_gate, w_up)
+    result = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(
+        x, w_gate, w_up
+    )
     gate = x @ w_gate.t()
     up = x @ w_up.t()
     expected = F.silu(gate) * up
@@ -65,7 +63,7 @@ w_gate = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 w_up = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 
 for _ in range(num_warmup):
-    _ = kernel.fused_swiglu_mlp(x, w_gate, w_up)
+    _ = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(x, w_gate, w_up)
     _ = F.silu(x @ w_gate.t()) * (x @ w_up.t())
 torch.cuda.synchronize()
 
@@ -74,7 +72,9 @@ end = torch.cuda.Event(enable_timing=True)
 
 start.record()
 for _ in range(num_iters):
-    result = kernel.fused_swiglu_mlp(x, w_gate, w_up)
+    result = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(
+        x, w_gate, w_up
+    )
 end.record()
 torch.cuda.synchronize()
 kernel_ms = start.elapsed_time(end) / num_iters
