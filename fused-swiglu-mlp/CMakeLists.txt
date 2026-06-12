@@ -305,6 +305,15 @@ if(GPU_LANG STREQUAL "CUDA")
   target_include_directories(${OPS_NAME} PRIVATE
     ${CUTLASS_INCLUDE_DIR}
     ${CUTLASS_INCLUDE_DIR}/../tools/util/include)
+  # After building, copy the .so into torch-ext/ so that
+  # kernels.get_local_kernel(Path("torch-ext"), "cuda") picks up the
+  # freshly-built library instead of a stale copy.
+  add_custom_command(TARGET ${OPS_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:${OPS_NAME}>"
+      "${CMAKE_CURRENT_SOURCE_DIR}/torch-ext/fused_swiglu_mlp/"
+    COMMENT "Copying $<TARGET_FILE_NAME:${OPS_NAME}> to torch-ext/fused_swiglu_mlp/"
+  )
 endif()
 
 if(GPU_LANG STREQUAL "SYCL")
