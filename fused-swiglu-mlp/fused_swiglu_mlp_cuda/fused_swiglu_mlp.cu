@@ -1,6 +1,4 @@
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/torch.h>
+#include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
@@ -15,15 +13,6 @@
 #include <cutlass/util/packed_stride.hpp>
 
 #include "swiglu.h"
-
-template <typename T, typename... Ts>
-constexpr bool all_equal(const T& first, const Ts&... rest) {
-    return ((first == rest) && ...);
-}
-
-constexpr bool isSupportedFloatingType(const torch::ScalarType type) {
-    return type == c10::kFloat || type == c10::kBFloat16 || type == c10::kHalf;
-}
 
 namespace detail {
 
@@ -198,6 +187,7 @@ cutlass::Status launch_fused_swiglu_gemm(
     typename GemmDevice::GemmKernel::CollectiveEpilogue::ElementD* ptr_D,
     typename GemmDevice::GemmKernel::CollectiveEpilogue::ElementD const* ptr_aux,
     const int64_t M, const int64_t N, const int64_t K,
+    const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
     using GemmKernel = typename GemmDevice::GemmKernel;
@@ -233,8 +223,8 @@ cutlass::Status launch_fused_swiglu_gemm(
     };
 
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.device_id = static_cast<unsigned char>(at::cuda::current_device());
-    hw_info.sm_count = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+    hw_info.device_id = static_cast<unsigned char>(device_id);
+    hw_info.sm_count = sm_count;
 
     typename GemmDevice::Arguments args = {
         cutlass::gemm::GemmUniversalMode::kGemm,
@@ -250,17 +240,23 @@ cutlass::Status launch_fused_swiglu_gemm(
     cutlass::Status status = gemm_op.can_implement(args);
     if (status != cutlass::Status::kSuccess) return status;
 
-    auto* allocator = c10::cuda::CUDACachingAllocator::get();
     const auto workspace_size = GemmDevice::get_workspace_size(args);
-    const auto workspace = allocator->allocate(workspace_size);
+    void* workspace = nullptr;
+    if (workspace_size > 0) {
+        auto cuda_status = cudaMalloc(&workspace, workspace_size);
+        if (cuda_status != cudaSuccess) return cutlass::Status::kErrorInternal;
+    }
 
-    status = gemm_op.initialize(args, workspace.get(), stream);
-    if (status != cutlass::Status::kSuccess) return status;
+    status = gemm_op.initialize(args, workspace, stream);
+    if (status != cutlass::Status::kSuccess) {
+        if (workspace) cudaFree(workspace);
+        return status;
+    }
 
-    return gemm_op.run(stream);
+    status = gemm_op.run(stream);
+    if (workspace) cudaFree(workspace);
+    return status;
 }
-
-} // namespace detail
 
 template <typename ElementAB, typename ElementOut, typename ArchTag, typename EpilogueSchedule>
 cutlass::Status run_swiglu_gemm(
@@ -269,12 +265,13 @@ cutlass::Status run_swiglu_gemm(
     ElementOut* ptr_D,
     ElementOut const* ptr_aux,
     const int64_t M, const int64_t N, const int64_t K,
+    const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
-    using Gemm = typename detail::FusedSwigluGemm<ElementAB, ElementOut, ArchTag, EpilogueSchedule>::GemmDevice;
-    return detail::launch_fused_swiglu_gemm<Gemm>(
+    using Gemm = typename FusedSwigluGemm<ElementAB, ElementOut, ArchTag, EpilogueSchedule>::GemmDevice;
+    return launch_fused_swiglu_gemm<Gemm>(
         ptr_A, ptr_B, ptr_D, ptr_aux,
-        M, N, K, stream
+        M, N, K, device_id, sm_count, stream
     );
 }
 
@@ -286,118 +283,125 @@ void run_swiglu_elementwise(
     constexpr auto block_size = 256l;
     const auto total = M * N;
     const auto grid_size = (total + block_size - 1) / block_size;
-    detail::swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(output, gate, up, total);
+    swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(output, gate, up, total);
 }
 
-torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_gate, torch::Tensor const& w_up) {
-    TORCH_CHECK(x.device().is_cuda(), "x must be a CUDA tensor");
-    TORCH_CHECK(w_gate.device().is_cuda(), "w_gate must be a CUDA tensor");
-    TORCH_CHECK(w_up.device().is_cuda(), "w_up must be a CUDA tensor");
-    TORCH_CHECK(all_equal(x.device(), w_gate.device(), w_up.device()), "Tensors must be on the same device");
-    TORCH_CHECK(all_equal(x.scalar_type(), w_gate.scalar_type(), w_up.scalar_type()), "Tensors must have the same dtype");
-    TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
-    TORCH_CHECK(w_gate.is_contiguous(), "w_gate must be contiguous");
-    TORCH_CHECK(w_up.is_contiguous(), "w_up must be contiguous");
-    TORCH_CHECK(x.dim() == 2, "x must be 2D [M, K]");
-    TORCH_CHECK(w_gate.dim() == 2, "w_gate must be 2D [N, K]");
-    TORCH_CHECK(w_up.dim() == 2, "w_up must be 2D [N, K]");
-    TORCH_CHECK(x.size(1) == w_gate.size(1), "x K dim must match w_gate K dim");
-    TORCH_CHECK(w_gate.sizes() == w_up.sizes(), "w_gate and w_up must have the same shape");
-    TORCH_CHECK(isSupportedFloatingType(x.scalar_type()), "Only float32, bfloat16, float16 supported");
+} // namespace detail
 
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+// ---------------------------------------------------------------------------
+// C-linkage interface — called from the PyTorch host .cpp file.
+// This avoids including any PyTorch headers in the .cu compilation unit,
+// avoiding GCC 15 + C++17 template-body errors in ATen headers and
+// C++20/C++17 ABI mismatches with libtorch.
+// ---------------------------------------------------------------------------
 
-    const auto M = x.size(0);
-    const auto N = w_gate.size(0);
-    const auto K = x.size(1);
+extern "C" {
 
-    torch::Tensor out = torch::empty({M, N}, x.options());
-
-    const auto cc_major = at::cuda::getCurrentDeviceProperties()->major;
-    const auto cc_minor = at::cuda::getCurrentDeviceProperties()->minor;
-    const auto cc = cc_major * 10 + cc_minor;
-
-    if (bool use_cutlass_fusion = (cc >= 90) && (x.scalar_type() != c10::kFloat)) {
-        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
-
-        auto try_cutlass = [&]() -> bool {
-            auto status = cutlass::Status::kErrorInternal;
-
-            if (x.scalar_type() == c10::kBFloat16) {
-                using ElementAB = cutlass::bfloat16_t;
-                using ElementOut = cutlass::bfloat16_t;
+// Returns true if the CUTLASS fused SwiGLU GEMM succeeded.
+// ptr_A: x data [M, K], ptr_B: w_gate data [N, K], ptr_D: output [M, N]
+// ptr_aux: up projection result [M, N]
+bool cutlass_fused_swiglu_bf16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
+    cudaStream_t stream
+) {
+    using ElementAB = cutlass::bfloat16_t;
+    using ElementOut = cutlass::bfloat16_t;
+    auto status = cutlass::Status::kErrorInternal;
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-                if (cc >= 100) {
-                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-                        static_cast<ElementAB const*>(x.data_ptr()),
-                        static_cast<ElementAB const*>(w_gate.data_ptr()),
-                        static_cast<ElementOut*>(out.data_ptr()),
-                        static_cast<ElementOut const*>(up.data_ptr()),
-                        M, N, K, stream
-                    );
-                } else
+    if (cc >= 100) {
+        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
+    } else
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-                {
-                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-                        static_cast<ElementAB const*>(x.data_ptr()),
-                        static_cast<ElementAB const*>(w_gate.data_ptr()),
-                        static_cast<ElementOut*>(out.data_ptr()),
-                        static_cast<ElementOut const*>(up.data_ptr()),
-                        M, N, K, stream
-                    );
-                }
-#else
-                { return false; }
-#endif
-            } else if (x.scalar_type() == c10::kHalf) {
-                using ElementAB = cutlass::half_t;
-                using ElementOut = cutlass::half_t;
-
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-                if (cc >= 100) {
-                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-                        static_cast<ElementAB const*>(x.data_ptr()),
-                        static_cast<ElementAB const*>(w_gate.data_ptr()),
-                        static_cast<ElementOut*>(out.data_ptr()),
-                        static_cast<ElementOut const*>(up.data_ptr()),
-                        M, N, K, stream
-                    );
-                } else
-#endif
-#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-                {
-                    status = run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-                        static_cast<ElementAB const*>(x.data_ptr()),
-                        static_cast<ElementAB const*>(w_gate.data_ptr()),
-                        static_cast<ElementOut*>(out.data_ptr()),
-                        static_cast<ElementOut const*>(up.data_ptr()),
-                        M, N, K, stream
-                    );
-                }
-#else
-                { return false; }
-#endif
-            }
-
-            return status == cutlass::Status::kSuccess;
-        };
-
-        if (try_cutlass())
-            return out;
-
-        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
-        at::silu_out(out, gate);
-        out.mul_(up);
-    } else {
-        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
-        const auto up = at::matmul(x, w_up.transpose(0, 1));
-
-        at::silu_out(out, gate);
-        out.mul_(up);
+    {
+        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
     }
+#else
+    { return false; }
+#endif
 
-    return out;
+    return status == cutlass::Status::kSuccess;
 }
+
+bool cutlass_fused_swiglu_f16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
+    cudaStream_t stream
+) {
+    using ElementAB = cutlass::half_t;
+    using ElementOut = cutlass::half_t;
+    auto status = cutlass::Status::kErrorInternal;
+
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+    if (cc >= 100) {
+        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
+    } else
+#endif
+#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
+    {
+        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
+    }
+#else
+    { return false; }
+#endif
+
+    return status == cutlass::Status::kSuccess;
+}
+
+void swiglu_elementwise_bf16(
+    void* output, const void* gate, const void* up,
+    const int64_t M, const int64_t N,
+    cudaStream_t stream
+) {
+    detail::run_swiglu_elementwise<cutlass::bfloat16_t>(
+        static_cast<cutlass::bfloat16_t*>(output),
+        static_cast<cutlass::bfloat16_t const*>(gate),
+        static_cast<cutlass::bfloat16_t const*>(up),
+        M, N, stream
+    );
+}
+
+void swiglu_elementwise_f16(
+    void* output, const void* gate, const void* up,
+    const int64_t M, const int64_t N,
+    cudaStream_t stream
+) {
+    detail::run_swiglu_elementwise<cutlass::half_t>(
+        static_cast<cutlass::half_t*>(output),
+        static_cast<cutlass::half_t const*>(gate),
+        static_cast<cutlass::half_t const*>(up),
+        M, N, stream
+    );
+}
+
+} // extern "C"

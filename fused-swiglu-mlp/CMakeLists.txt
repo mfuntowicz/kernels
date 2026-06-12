@@ -257,23 +257,24 @@ set(TORCH_fused-swiglu-mlp_SRC
   torch-ext/torch_binding.cpp torch-ext/torch_binding.h
 )
 
-
 list(APPEND SRC "${TORCH_fused-swiglu-mlp_SRC}")
 if(GPU_LANG STREQUAL "CUDA")
+  # The host-side glue that calls PyTorch APIs — compiled as plain C++17
+  list(APPEND SRC "fused_swiglu_mlp_cuda/fused_swiglu_mlp_host.cpp")
+
   if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
     set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a;12.0a")
   else()
     set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
   endif()
+  # The .cu file contains ONLY CUTLASS code (no PyTorch headers), so it can
+  # safely use C++20 for device compilation without ABI-mismatch risk.
+  # -Xcompiler=-std=c++17 keeps the host side at C++17 if any host code
+  # slips in, but the .cu file intentionally includes zero PyTorch headers.
   cuda_kernel_component(SRC
     NAME fused_swiglu_mlp
     SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
     CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
-    # CUTLASS 4.0 requires C++20 for device code while PyTorch's ABI is C++17.
-    # -std=c++20: tells NVCC to compile device code as C++20 (overrides the
-    #   global -std=c++17 from PyTorch for device compilation).
-    # -Xcompiler=-std=c++17: tells the HOST compiler (within NVCC) to use
-    #   C++17, matching PyTorch's ABI (FunctionSchema, RegisterOrVerify, etc.)
     CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
   )
 endif()
@@ -295,11 +296,15 @@ define_gpu_extension_target(
   WITH_SOABI)
 
 # CUTLASS 4.0 requires C++20 for device code, but PyTorch's C++ ABI was
-# built with C++17.  The .cu file uses -std=c++20 for device and
-# -Xcompiler=-std=c++17 for host (set per-file above).  Pure .cpp files
-# must also use C++17 to match PyTorch's ABI.
+# built with C++17.  The .cu file has no PyTorch headers and uses C++20 for
+# device compilation.  The host .cpp files (including fused_swiglu_mlp_host.cpp)
+# must use C++17 to match PyTorch's ABI.  The host .cpp also needs CUTLASS
+# headers for bfloat16_t/half_t type definitions used in the extern "C" decls.
 if(GPU_LANG STREQUAL "CUDA")
   set_property(TARGET ${OPS_NAME} PROPERTY CXX_STANDARD 17)
+  target_include_directories(${OPS_NAME} PRIVATE
+    ${CUTLASS_INCLUDE_DIR}
+    ${CUTLASS_INCLUDE_DIR}/../tools/util/include)
 endif()
 
 if(GPU_LANG STREQUAL "SYCL")
