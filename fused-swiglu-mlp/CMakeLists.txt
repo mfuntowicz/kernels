@@ -251,6 +251,11 @@ endif(GPU_LANG STREQUAL "CUDA")
 if(GPU_LANG STREQUAL "CUDA")
   get_torch_gpu_compiler_flags(TORCH_GPU_FLAGS ${GPU_LANG})
   list(APPEND GPU_FLAGS ${TORCH_GPU_FLAGS})
+  # CUTLASS 4.0 requires C++20.  PyTorch's COMMON_NVCC_FLAGS sets -std=c++17.
+  # Replace it with C++20, which also resolves GCC 15 template-body errors in
+  # ATen/core/List_inl.h (P0634R3 makes "typename decltype(...)::member" valid).
+  list(REMOVE_ITEM GPU_FLAGS "-std=c++17")
+  list(APPEND GPU_FLAGS "-std=c++20")
 endif()
 
 set(TORCH_fused-swiglu-mlp_SRC
@@ -269,10 +274,6 @@ if(GPU_LANG STREQUAL "CUDA")
     NAME fused_swiglu_mlp
     SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
     CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
-    # GCC 15 now enforces the C++ standard requirement for `typename` in
-    # dependent contexts as a hard error.  PyTorch 2.10 headers trip this in
-    # ATen/core/List_inl.h.  -fpermissive downgrades the error to a warning.
-    CUDA_FLAGS "-Xcompiler=-fpermissive"
   )
 endif()
 # Include Metal shader compilation utilities if needed
@@ -291,6 +292,11 @@ define_gpu_extension_target(
   ARCHITECTURES ${GPU_ARCHES}
   USE_SABI 3
   WITH_SOABI)
+
+# CUTLASS 4.0 requires C++20; override the PyTorch-forced C++17.
+if(GPU_LANG STREQUAL "CUDA")
+  set_property(TARGET ${OPS_NAME} PROPERTY CXX_STANDARD 20)
+endif()
 
 if(GPU_LANG STREQUAL "SYCL")
     target_link_options(${OPS_NAME} PRIVATE ${sycl_link_flags})
