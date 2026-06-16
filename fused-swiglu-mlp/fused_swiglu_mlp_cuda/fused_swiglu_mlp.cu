@@ -1,6 +1,20 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 
+// Sm120 (consumer Blackwell, cc=12.x) uses GMMA — the same instruction set
+// as Sm90 (Hopper). CUTLASS v4.0.0 predates Sm120 and doesn't define the
+// CUTE_ARCH_MMA_SM90*_ENABLED macros when compiling for sm_120a. Without
+// them, wgmma.fence is skipped and GMMA operations produce garbage results.
+// Force-enable these macros so the Sm90 GMMA code paths are taken.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if !defined(CUTE_ARCH_MMA_SM90_ENABLED)
+#define CUTE_ARCH_MMA_SM90_ENABLED 1
+#endif
+#if !defined(CUTE_ARCH_MMA_SM90A_ENABLED)
+#define CUTE_ARCH_MMA_SM90A_ENABLED 1
+#endif
+#endif
+
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
@@ -258,37 +272,23 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
-    fprintf(stderr, "[launch] smem=%d arch_cc=%d\n",
-            GemmDevice::GemmKernel::SharedStorageSize,
-            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
-
     cutlass::Status status = gemm_op.can_implement(args);
-    fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
-    fprintf(stderr, "[launch] workspace_size=%zu\n", workspace_size);
     void* workspace = nullptr;
     if (workspace_size > 0) {
         auto cuda_status = cudaMalloc(&workspace, workspace_size);
-        fprintf(stderr, "[launch] cudaMalloc=%d\n", static_cast<int>(cuda_status));
         if (cuda_status != cudaSuccess) return cutlass::Status::kErrorInternal;
     }
 
-    cudaError_t pre_init_err = cudaGetLastError();
-    fprintf(stderr, "[launch] pre_init cuda_err=%d(%s)\n", static_cast<int>(pre_init_err), cudaGetErrorString(pre_init_err));
-
     status = gemm_op.initialize(args, workspace, stream);
-    cudaError_t post_init_err = cudaGetLastError();
-    fprintf(stderr, "[launch] initialize=%d post_init_cuda_err=%d(%s)\n",
-            static_cast<int>(status), static_cast<int>(post_init_err), cudaGetErrorString(post_init_err));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
-    fprintf(stderr, "[launch] run=%d\n", static_cast<int>(status));
     if (workspace) cudaFree(workspace);
     return status;
 }
@@ -344,11 +344,8 @@ bool cutlass_fused_swiglu_bf16(
     using ElementAB = cutlass::bfloat16_t;
     using ElementOut = cutlass::bfloat16_t;
 
-    fprintf(stderr, "[bf16] cc=%d\n", cc);
-
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
     if (cc >= 100 && cc < 120) {
-        fprintf(stderr, "[bf16] trying Sm100\n");
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
@@ -356,13 +353,11 @@ bool cutlass_fused_swiglu_bf16(
             reinterpret_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
-        fprintf(stderr, "[bf16] Sm100 status=%d\n", static_cast<int>(status));
         if (status == cutlass::Status::kSuccess) return true;
     }
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90) {
-        fprintf(stderr, "[bf16] trying Sm90\n");
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
@@ -370,7 +365,6 @@ bool cutlass_fused_swiglu_bf16(
             reinterpret_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
-        fprintf(stderr, "[bf16] Sm90 status=%d\n", static_cast<int>(status));
         return status == cutlass::Status::kSuccess;
     }
 #endif
