@@ -166,11 +166,12 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
+    const auto workspace_size = GemmDevice::get_workspace_size(args);
+
     cutlass::Status status = gemm_op.can_implement(args);
     fprintf(stderr, "[launch] can_implement=%d workspace=%lu\n", static_cast<int>(status), (unsigned long)workspace_size);
     if (status != cutlass::Status::kSuccess) return status;
 
-    const auto workspace_size = GemmDevice::get_workspace_size(args);
     void* workspace = nullptr;
     if (workspace_size > 0) {
         auto cuda_status = cudaMalloc(&workspace, workspace_size);
