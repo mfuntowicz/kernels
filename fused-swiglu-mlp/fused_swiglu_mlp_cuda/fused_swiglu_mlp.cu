@@ -1,10 +1,8 @@
-#include <cstdio>
 #include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
-#include <cutlass/device_kernel.h>
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
 #include <cutlass/gemm/kernel/gemm_universal.hpp>
 #include <cutlass/gemm/collective/collective_builder.hpp>
@@ -62,8 +60,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
         EVT
     >::CollectiveOp;
 
-    using StageCount = cutlass::gemm::collective::StageCountAutoCarveout<
-        static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>;
+    using StageCount = cutlass::gemm::collective::StageCount<3>;
 
     using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
         cutlass::arch::Sm90,
@@ -82,77 +79,6 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
         CollectiveMainloop,
         CollectiveEpilogue,
         cutlass::gemm::PersistentScheduler
-    >;
-
-    using GemmDevice = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
-
-    using StrideA = typename GemmKernel::StrideA;
-    using StrideB = typename GemmKernel::StrideB;
-    using StrideC = typename GemmKernel::StrideC;
-    using StrideD = typename GemmKernel::StrideD;
-};
-
-#endif
-
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-
-template <typename ElementAB, typename ElementOut>
-struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized1Sm> {
-    using ElementA = ElementAB;
-    using ElementB = ElementAB;
-    using ElementC = void;
-    using ElementD = ElementOut;
-    using ElementAux = ElementOut;
-    using ElementAccum = float;
-    using ElementCompute = float;
-
-    using LayoutA = cutlass::layout::RowMajor;
-    using LayoutB = cutlass::layout::ColumnMajor;
-    using LayoutC = cutlass::layout::RowMajor;
-    using LayoutD = cutlass::layout::RowMajor;
-
-    static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
-    static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-    static constexpr int AlignmentC = 1;
-    static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
-
-    using TileShapeMNK = cute::Shape<cute::_64, cute::_128, cute::_64>;
-    using ClusterShapeMNK = cute::Shape<cute::_1, cute::_1, cute::_1>;
-
-    using EVT = SwigluEVT<ElementD, ElementAux>;
-
-    using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-        cutlass::arch::Sm100,
-        cutlass::arch::OpClassTensorOp,
-        TileShapeMNK,
-        ClusterShapeMNK,
-        cutlass::epilogue::collective::EpilogueTileAuto,
-        ElementAccum,
-        ElementCompute,
-        ElementC, LayoutC, AlignmentC,
-        ElementD, LayoutD, AlignmentD,
-        cutlass::epilogue::TmaWarpSpecialized1Sm,
-        EVT
-    >::CollectiveOp;
-
-    using StageCount = cutlass::gemm::collective::StageCount<3>;
-
-    using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-        cutlass::arch::Sm100,
-        cutlass::arch::OpClassTensorOp,
-        ElementA, LayoutA, AlignmentA,
-        ElementB, LayoutB, AlignmentB,
-        ElementAccum,
-        TileShapeMNK,
-        ClusterShapeMNK,
-        StageCount,
-        cutlass::gemm::KernelTmaWarpSpecialized1SmSm100
-    >::CollectiveOp;
-
-    using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
-        cute::Shape<int64_t, int64_t, int64_t, int64_t>,
-        CollectiveMainloop,
-        CollectiveEpilogue
     >;
 
     using GemmDevice = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
@@ -238,28 +164,7 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
-    fprintf(stderr, "[launch] SharedStorageSize=%d ArchTag_min_cc=%d\n",
-            GemmDevice::GemmKernel::SharedStorageSize,
-            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
-
-    // Test cudaFuncSetAttribute BEFORE calling initialize (CUTLASS clears error internally)
-    int smem_size = GemmDevice::GemmKernel::SharedStorageSize;
-    if (smem_size >= (48 << 10)) {
-        cudaError_t result = cudaFuncSetAttribute(
-            cutlass::device_kernel<GemmKernel>,
-            cudaFuncAttributeMaxDynamicSharedMemorySize,
-            smem_size);
-        fprintf(stderr, "[launch] PRE-TEST cudaFuncSetAttribute(smem=%d) = %d (%s)\n",
-                smem_size, static_cast<int>(result), cudaGetErrorString(result));
-        if (result != cudaSuccess) {
-            result = cudaGetLastError(); // clear
-            fprintf(stderr, "[launch] cudaFuncSetAttribute FAILED\n");
-            return cutlass::Status::kErrorInternal;
-        }
-    }
-
     cutlass::Status status = gemm_op.can_implement(args);
-    fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -269,18 +174,13 @@ cutlass::Status launch_fused_swiglu_gemm(
         if (cuda_status != cudaSuccess) return cutlass::Status::kErrorInternal;
     }
 
-    fprintf(stderr, "[launch] About to call initialize, workspace=%p size=%lu\n", workspace, (unsigned long)workspace_size);
     status = gemm_op.initialize(args, workspace, stream);
-    fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
-    fprintf(stderr, "[launch] run=%d\n", static_cast<int>(status));
-    cudaError_t post_run_err = cudaGetLastError();
-    fprintf(stderr, "[launch] cudaGetLastError after run: %d (%s)\n", post_run_err, cudaGetErrorString(post_run_err));
     if (workspace) cudaFree(workspace);
     return status;
 }
@@ -315,13 +215,6 @@ void run_swiglu_elementwise(
 
 } // namespace detail
 
-// ---------------------------------------------------------------------------
-// C-linkage interface — called from the PyTorch host .cpp file.
-// This avoids including any PyTorch headers in the .cu compilation unit,
-// avoiding GCC 15 + C++17 template-body errors in ATen headers and
-// C++20/C++17 ABI mismatches with libtorch.
-// ---------------------------------------------------------------------------
-
 extern "C" {
 
 bool cutlass_fused_swiglu_bf16(
@@ -334,35 +227,6 @@ bool cutlass_fused_swiglu_bf16(
     using ElementAB = cutlass::bfloat16_t;
     using ElementOut = cutlass::bfloat16_t;
 
-    fprintf(stderr, "[bf16] cc=%d M=%ld N=%ld K=%ld SM100=%d SM90=%d\n",
-            cc, (long)M, (long)N, (long)K,
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-            1
-#else
-            0
-#endif
-            ,
-#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-            1
-#else
-            0
-#endif
-            );
-
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-    if (cc >= 100) {
-        fprintf(stderr, "[bf16] Trying Sm100 1SM path\n");
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized1Sm>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-        fprintf(stderr, "[bf16] Sm100 status=%d\n", static_cast<int>(status));
-        return status == cutlass::Status::kSuccess;
-    } else
-#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90) {
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
@@ -373,13 +237,11 @@ bool cutlass_fused_swiglu_bf16(
             M, N, K, device_id, sm_count, stream
         );
         return status == cutlass::Status::kSuccess;
-    } else
-#endif
-    {
-        (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
-        (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
-        return false;
     }
+#endif
+    (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
+    (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
+    return false;
 }
 
 bool cutlass_fused_swiglu_f16(
@@ -392,18 +254,6 @@ bool cutlass_fused_swiglu_f16(
     using ElementAB = cutlass::half_t;
     using ElementOut = cutlass::half_t;
 
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-    if (cc >= 100) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized1Sm>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-        return status == cutlass::Status::kSuccess;
-    } else
-#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90) {
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
@@ -414,13 +264,11 @@ bool cutlass_fused_swiglu_f16(
             M, N, K, device_id, sm_count, stream
         );
         return status == cutlass::Status::kSuccess;
-    } else
-#endif
-    {
-        (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
-        (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
-        return false;
     }
+#endif
+    (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
+    (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
+    return false;
 }
 
 void swiglu_elementwise_bf16(
@@ -444,7 +292,7 @@ void swiglu_elementwise_f16(
     detail::run_swiglu_elementwise<cutlass::half_t>(
         reinterpret_cast<cutlass::half_t*>(output),
         reinterpret_cast<cutlass::half_t*>(const_cast<void*>(gate)),
-        reinterpret_cast<cutlass::half_t*>(const_cast<void*>(up)),
+        reinterpret_cast<cutlass::half_t const*>(up),
         M, N, stream
     );
 }
