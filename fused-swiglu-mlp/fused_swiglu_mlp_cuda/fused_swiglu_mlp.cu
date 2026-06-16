@@ -116,7 +116,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epi
     static constexpr int AlignmentC = 1;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
-    using TileShapeMNK = cute::Shape<cute::_128, cute::_128, cute::_64>;
+    using TileShapeMNK = cute::Shape<cute::_64, cute::_128, cute::_64>;
     using ClusterShapeMNK = cute::Shape<cute::_1, cute::_1, cute::_1>;
 
     using EVT = SwigluEVT<ElementD, ElementAux>;
@@ -135,8 +135,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epi
         EVT
     >::CollectiveOp;
 
-    using StageCount = cutlass::gemm::collective::StageCountAutoCarveout<
-        static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>;
+    using StageCount = cutlass::gemm::collective::StageCount<3>;
 
     using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
         cutlass::arch::Sm100,
