@@ -4,6 +4,7 @@
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
+#include <cutlass/device_kernel.h>
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
 #include <cutlass/gemm/kernel/gemm_universal.hpp>
 #include <cutlass/gemm/collective/collective_builder.hpp>
@@ -238,9 +239,25 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
-    fprintf(stderr, "[launch] SharedStorageSize=%d\n", GemmDevice::GemmKernel::SharedStorageSize);
-    cudaError_t prev_err = cudaGetLastError();
-    fprintf(stderr, "[launch] cudaGetLastError before can_implement: %d (%s)\n", prev_err, cudaGetErrorString(prev_err));
+    fprintf(stderr, "[launch] SharedStorageSize=%d ArchTag_min_cc=%d\n",
+            GemmDevice::GemmKernel::SharedStorageSize,
+            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
+
+    // Test cudaFuncSetAttribute BEFORE calling initialize (CUTLASS clears error internally)
+    int smem_size = GemmDevice::GemmKernel::SharedStorageSize;
+    if (smem_size >= (48 << 10)) {
+        cudaError_t result = cudaFuncSetAttribute(
+            cutlass::device_kernel<GemmKernel>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            smem_size);
+        fprintf(stderr, "[launch] PRE-TEST cudaFuncSetAttribute(smem=%d) = %d (%s)\n",
+                smem_size, static_cast<int>(result), cudaGetErrorString(result));
+        if (result != cudaSuccess) {
+            result = cudaGetLastError(); // clear
+            fprintf(stderr, "[launch] cudaFuncSetAttribute FAILED\n");
+            return cutlass::Status::kErrorInternal;
+        }
+    }
 
     cutlass::Status status = gemm_op.can_implement(args);
     fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
@@ -256,8 +273,6 @@ cutlass::Status launch_fused_swiglu_gemm(
     fprintf(stderr, "[launch] About to call initialize, workspace=%p size=%lu\n", workspace, (unsigned long)workspace_size);
     status = gemm_op.initialize(args, workspace, stream);
     fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
-    cudaError_t post_init_err = cudaGetLastError();
-    fprintf(stderr, "[launch] cudaGetLastError after initialize: %d (%s)\n", post_init_err, cudaGetErrorString(post_init_err));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
