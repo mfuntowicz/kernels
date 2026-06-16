@@ -11,6 +11,7 @@ import platform
 
 import torch
 import torch.nn.functional as F
+import kernels
 
 if platform.system() == "Darwin":
     device = torch.device("mps")
@@ -39,9 +40,11 @@ for M, N, K in SIZES:
     w_gate = torch.randn(N, K, dtype=torch.bfloat16, device=device)
     w_up = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 
-    result = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(
-        x, w_gate, w_up
-    )
+    # Fused
+    fused_swiglu_mlp = kernels.get_kernel("kernels-community/fused-swiglu-mlp")
+    result = fused_swiglu_mlp(x, w_gate, w_up)
+
+    # Gold
     gate = x @ w_gate.t()
     up = x @ w_up.t()
     expected = F.silu(gate) * up
