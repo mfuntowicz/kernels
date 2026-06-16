@@ -4,6 +4,7 @@
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
+#include <cutlass/device_kernel.h>
 #include <cutlass/gemm/device/gemm_universal_adapter.h>
 #include <cutlass/gemm/kernel/gemm_universal.hpp>
 #include <cutlass/gemm/collective/collective_builder.hpp>
@@ -258,9 +259,22 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
-    fprintf(stderr, "[launch] smem=%d arch_cc=%d\n",
-            GemmDevice::GemmKernel::SharedStorageSize,
-            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
+    constexpr auto smem_size = GemmDevice::GemmKernel::SharedStorageSize;
+    fprintf(stderr, "[launch] smem=%d arch_cc=%d threads=%d\n",
+            smem_size,
+            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability,
+            GemmDevice::GemmKernel::kThreadCount);
+
+    auto cfa = cudaFuncSetAttribute(
+        (const void*)cutlass::device_kernel<typename GemmDevice::GemmKernel>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        smem_size);
+    fprintf(stderr, "[launch] cudaFuncSetAttribute smem=%d result=%d(%s)\n",
+            smem_size, static_cast<int>(cfa), cudaGetErrorString(cfa));
+    if (cfa != cudaSuccess) {
+        fprintf(stderr, "[launch] smem too large for this GPU, aborting\n");
+        return cutlass::Status::kErrorInternal;
+    }
 
     cutlass::Status status = gemm_op.can_implement(args);
     fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
@@ -276,14 +290,14 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
-    fprintf(stderr, "[launch] initialize=%d cuda_err=%d\n", static_cast<int>(status), static_cast<int>(cudaGetLastError()));
+    fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
-    fprintf(stderr, "[launch] run=%d cuda_err=%d\n", static_cast<int>(status), static_cast<int>(cudaGetLastError()));
+    fprintf(stderr, "[launch] run=%d\n", static_cast<int>(status));
     if (workspace) cudaFree(workspace);
     return status;
 }
