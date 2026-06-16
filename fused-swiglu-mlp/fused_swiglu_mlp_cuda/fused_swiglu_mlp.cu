@@ -241,10 +241,10 @@ bool cutlass_fused_swiglu_bf16(
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     (void)cc;
     auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-        static_cast<ElementAB const*>(ptr_A),
-        static_cast<ElementAB const*>(ptr_B),
-        static_cast<ElementOut*>(ptr_D),
-        static_cast<ElementOut const*>(ptr_aux),
+        reinterpret_cast<ElementAB const*>(ptr_A),
+        reinterpret_cast<ElementAB const*>(ptr_B),
+        reinterpret_cast<ElementOut*>(ptr_D),
+        reinterpret_cast<ElementOut const*>(ptr_aux),
         M, N, K, device_id, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;
@@ -268,10 +268,10 @@ bool cutlass_fused_swiglu_f16(
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     (void)cc;
     auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-        static_cast<ElementAB const*>(ptr_A),
-        static_cast<ElementAB const*>(ptr_B),
-        static_cast<ElementOut*>(ptr_D),
-        static_cast<ElementOut const*>(ptr_aux),
+        reinterpret_cast<ElementAB const*>(ptr_A),
+        reinterpret_cast<ElementAB const*>(ptr_B),
+        reinterpret_cast<ElementOut*>(ptr_D),
+        reinterpret_cast<ElementOut const*>(ptr_aux),
         M, N, K, device_id, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;
@@ -288,9 +288,9 @@ void swiglu_elementwise_bf16(
     cudaStream_t stream
 ) {
     detail::run_swiglu_elementwise<cutlass::bfloat16_t>(
-        static_cast<cutlass::bfloat16_t*>(output),
-        static_cast<cutlass::bfloat16_t*>(gate),
-        static_cast<cutlass::bfloat16_t const*>(up),
+        reinterpret_cast<cutlass::bfloat16_t*>(output),
+        reinterpret_cast<cutlass::bfloat16_t*>(const_cast<void*>(gate)),
+        reinterpret_cast<cutlass::bfloat16_t const*>(up),
         M, N, stream
     );
 }
@@ -301,9 +301,9 @@ void swiglu_elementwise_f16(
     cudaStream_t stream
 ) {
     detail::run_swiglu_elementwise<cutlass::half_t>(
-        static_cast<cutlass::half_t*>(output),
-        static_cast<cutlass::half_t*>(gate),
-        static_cast<cutlass::half_t const*>(up),
+        reinterpret_cast<cutlass::half_t*>(output),
+        reinterpret_cast<cutlass::half_t*>(const_cast<void*>(gate)),
+        reinterpret_cast<cutlass::half_t const*>(up),
         M, N, stream
     );
 }
