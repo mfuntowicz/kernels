@@ -238,6 +238,10 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
+    fprintf(stderr, "[launch] SharedStorageSize=%d\n", GemmDevice::GemmKernel::SharedStorageSize);
+    cudaError_t prev_err = cudaGetLastError();
+    fprintf(stderr, "[launch] cudaGetLastError before can_implement: %d (%s)\n", prev_err, cudaGetErrorString(prev_err));
+
     cutlass::Status status = gemm_op.can_implement(args);
     fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
@@ -249,8 +253,11 @@ cutlass::Status launch_fused_swiglu_gemm(
         if (cuda_status != cudaSuccess) return cutlass::Status::kErrorInternal;
     }
 
+    fprintf(stderr, "[launch] About to call initialize, workspace=%p size=%lu\n", workspace, (unsigned long)workspace_size);
     status = gemm_op.initialize(args, workspace, stream);
     fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
+    cudaError_t post_init_err = cudaGetLastError();
+    fprintf(stderr, "[launch] cudaGetLastError after initialize: %d (%s)\n", post_init_err, cudaGetErrorString(post_init_err));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
@@ -258,6 +265,8 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     status = gemm_op.run(stream);
     fprintf(stderr, "[launch] run=%d\n", static_cast<int>(status));
+    cudaError_t post_run_err = cudaGetLastError();
+    fprintf(stderr, "[launch] cudaGetLastError after run: %d (%s)\n", post_run_err, cudaGetErrorString(post_run_err));
     if (workspace) cudaFree(workspace);
     return status;
 }
