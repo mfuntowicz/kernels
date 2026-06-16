@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
@@ -238,6 +239,7 @@ cutlass::Status launch_fused_swiglu_gemm(
     GemmDevice gemm_op;
 
     cutlass::Status status = gemm_op.can_implement(args);
+    fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -248,12 +250,14 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
+    fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
+    fprintf(stderr, "[launch] run=%d\n", static_cast<int>(status));
     if (workspace) cudaFree(workspace);
     return status;
 }
@@ -307,8 +311,24 @@ bool cutlass_fused_swiglu_bf16(
     using ElementAB = cutlass::bfloat16_t;
     using ElementOut = cutlass::bfloat16_t;
 
+    fprintf(stderr, "[bf16] cc=%d M=%ld N=%ld K=%ld SM100=%d SM90=%d\n",
+            cc, (long)M, (long)N, (long)K,
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+            1
+#else
+            0
+#endif
+            ,
+#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
+            1
+#else
+            0
+#endif
+            );
+
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
     if (cc >= 100) {
+        fprintf(stderr, "[bf16] Trying Sm100 1SM path\n");
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized1Sm>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
@@ -316,6 +336,7 @@ bool cutlass_fused_swiglu_bf16(
             reinterpret_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
+        fprintf(stderr, "[bf16] Sm100 status=%d\n", static_cast<int>(status));
         return status == cutlass::Status::kSuccess;
     } else
 #endif
