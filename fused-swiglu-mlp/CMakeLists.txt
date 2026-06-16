@@ -262,11 +262,7 @@ if(GPU_LANG STREQUAL "CUDA")
   # The host-side glue that calls PyTorch APIs — compiled as plain C++17
   list(APPEND SRC "fused_swiglu_mlp_cuda/fused_swiglu_mlp_host.cpp")
 
-  if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
-    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a;12.0a")
-  else()
-    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
-  endif()
+  set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
   # The .cu file contains ONLY CUTLASS code (no PyTorch headers), so it can
   # safely use C++20 for device compilation without ABI-mismatch risk.
   # -Xcompiler=-std=c++17 keeps the host side at C++17 if any host code
