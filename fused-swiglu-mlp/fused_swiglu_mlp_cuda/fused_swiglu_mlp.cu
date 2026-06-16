@@ -53,7 +53,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, Sm90ConservativeConfig> {
     static constexpr int AlignmentC = 1;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
-    using TileShapeMNK = cute::Shape<cute::_64, cute::_128, cute::_64>;
+    using TileShapeMNK = cute::Shape<cute::_128, cute::_128, cute::_64>;
     using ClusterShapeMNK = cute::Shape<cute::_1, cute::_1, cute::_1>;
 
     using EVT = SwigluEVT<ElementD, ElementAux>;
@@ -72,7 +72,7 @@ struct FusedSwigluGemm<ElementAB, ElementOut, Sm90ConservativeConfig> {
         EVT
     >::CollectiveOp;
 
-    using StageCount = cutlass::gemm::collective::StageCount<3>;
+    using StageCount = cutlass::gemm::collective::StageCount<2>;
 
     using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
         cutlass::arch::Sm90,
@@ -258,12 +258,7 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
-    fprintf(stderr, "[launch] smem=%d arch_cc=%d\n",
-            GemmDevice::GemmKernel::SharedStorageSize,
-            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
-
     cutlass::Status status = gemm_op.can_implement(args);
-    fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -274,14 +269,12 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
-    fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
-    fprintf(stderr, "[launch] run=%d cuda_err=%d\n", static_cast<int>(status), static_cast<int>(cudaGetLastError()));
     if (workspace) cudaFree(workspace);
     return status;
 }
