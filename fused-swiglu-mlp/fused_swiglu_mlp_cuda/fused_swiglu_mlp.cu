@@ -180,25 +180,6 @@ struct FusedSwigluGemm<ElementAB, ElementOut, Sm100DatacenterConfig> {
 #endif
 
 // ---------------------------------------------------------------------------
-// Elementwise fallback kernel
-// ---------------------------------------------------------------------------
-template <typename Element>
-__global__ void swiglu_elementwise_kernel(
-    Element* __restrict__ output,
-    Element const* __restrict__ gate,
-    Element const* __restrict__ up,
-    const int64_t numel
-) {
-    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < numel) {
-        const auto g = static_cast<float>(gate[idx]);
-        const auto u = static_cast<float>(up[idx]);
-        const float silu = g / (1.0f + expf(-g));
-        output[idx] = static_cast<Element>(silu * u);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Generic launch function
 // ---------------------------------------------------------------------------
 template <typename GemmDevice>
@@ -296,17 +277,6 @@ cutlass::Status run_swiglu_gemm(
     );
 }
 
-template <typename Element>
-void run_swiglu_elementwise(
-    Element* output, Element const* gate, Element const* up,
-    const int64_t M, const int64_t N, cudaStream_t stream
-) {
-    constexpr auto block_size = 256l;
-    const auto total = M * N;
-    const auto grid_size = (total + block_size - 1) / block_size;
-    swiglu_elementwise_kernel<Element><<<grid_size, block_size, 0, stream>>>(output, gate, up, total);
-}
-
 } // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -398,32 +368,6 @@ bool cutlass_fused_swiglu_f16(
     (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
     (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
     return false;
-}
-
-void swiglu_elementwise_bf16(
-    void* output, const void* gate, const void* up,
-    const int64_t M, const int64_t N,
-    cudaStream_t stream
-) {
-    detail::run_swiglu_elementwise<cutlass::bfloat16_t>(
-        reinterpret_cast<cutlass::bfloat16_t*>(output),
-        reinterpret_cast<cutlass::bfloat16_t*>(const_cast<void*>(gate)),
-        reinterpret_cast<cutlass::bfloat16_t const*>(up),
-        M, N, stream
-    );
-}
-
-void swiglu_elementwise_f16(
-    void* output, const void* gate, const void* up,
-    const int64_t M, const int64_t N,
-    cudaStream_t stream
-) {
-    detail::run_swiglu_elementwise<cutlass::half_t>(
-        reinterpret_cast<cutlass::half_t*>(output),
-        reinterpret_cast<cutlass::half_t*>(const_cast<void*>(gate)),
-        reinterpret_cast<cutlass::half_t const*>(up),
-        M, N, stream
-    );
 }
 
 } // extern "C"
