@@ -34,8 +34,6 @@ if device.type == "cuda":
 
 
 fused = kernels.get_kernel("kernels-community/fused-swiglu-mlp")
-if not hasattr(fused, "fused_swiglu_mlp") in fused:
-    raise ValueError("invalid build, no fused_swiglu_mlp kernel found")
 
 SIZES = [(64, 32, 16), (1024, 1024, 1024), (4096, 4096, 4096)]
 for M, N, K in SIZES:
@@ -78,9 +76,7 @@ end = torch.cuda.Event(enable_timing=True)
 
 start.record()
 for _ in range(num_iters):
-    result = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(
-        x, w_gate, w_up
-    )
+    result = fused.fused_swiglu_mlp(x, w_gate, w_up)
 end.record()
 torch.cuda.synchronize()
 kernel_ms = start.elapsed_time(end) / num_iters
