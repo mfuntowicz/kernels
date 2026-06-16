@@ -211,7 +211,7 @@ if (NOT NvidiaCutlass_FOUND)
   set(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
 
 # Set CUTLASS_REVISION manually -- its revision detection doesn't work in this case.
-  set(CUTLASS_REVISION "v4.0.0" CACHE STRING "CUTLASS revision to use")
+  set(CUTLASS_REVISION "v4.4.2" CACHE STRING "CUTLASS revision to use")
 
 
 # Use the specified CUTLASS source directory for compilation if CUTLASS_SRC_DIR is provided
@@ -262,11 +262,10 @@ if(GPU_LANG STREQUAL "CUDA")
   # The host-side glue that calls PyTorch APIs — compiled as plain C++17
   list(APPEND SRC "fused_swiglu_mlp_cuda/fused_swiglu_mlp_host.cpp")
 
-  if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
-    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a;12.0a")
-  else()
-    set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
-  endif()
+  # Sm120 (consumer Blackwell, e.g. RTX 6000) uses UMMA, not GMMA —
+  # CUTLASS has no Sm120 bf16 UMMA path, so omit 12.0a to avoid PTX
+  # assembly failures (wgmma instructions are invalid for sm_120a).
+  set(FUSED_SWIGLU_CUDA_CAPABILITIES "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0a")
   # The .cu file contains ONLY CUTLASS code (no PyTorch headers), so it can
   # safely use C++20 for device compilation without ABI-mismatch risk.
   # -Xcompiler=-std=c++17 keeps the host side at C++17 if any host code

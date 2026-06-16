@@ -67,7 +67,7 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
     const auto device_id = at::cuda::current_device();
     const auto sm_count = static_cast<int>(props->multiProcessorCount);
 
-    if ((cc >= 90) && (x.scalar_type() != c10::kFloat)) {
+    if ((cc >= 90 && cc < 120) && (x.scalar_type() != c10::kFloat)) {
         const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
 
         bool ok = false;
@@ -87,14 +87,22 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
             return out;
 
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
-        at::silu_out(out, gate);
-        out.mul_(up);
+        if (x.scalar_type() == c10::kBFloat16) {
+            swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        } else {
+            swiglu_elementwise_f16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        }
     } else {
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         const auto up = at::matmul(x, w_up.transpose(0, 1));
-
-        at::silu_out(out, gate);
-        out.mul_(up);
+        if (x.scalar_type() == c10::kBFloat16) {
+            swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        } else if (x.scalar_type() == c10::kHalf) {
+            swiglu_elementwise_f16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        } else {
+            at::silu_out(out, gate);
+            out.mul_(up);
+        }
     }
 
     return out;

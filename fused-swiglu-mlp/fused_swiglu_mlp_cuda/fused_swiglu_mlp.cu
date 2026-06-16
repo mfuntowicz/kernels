@@ -1,20 +1,6 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 
-// Sm120 (consumer Blackwell, cc=12.x) uses GMMA — the same instruction set
-// as Sm90 (Hopper). CUTLASS v4.0.0 predates Sm120 and doesn't define the
-// CUTE_ARCH_MMA_SM90*_ENABLED macros when compiling for sm_120a. Without
-// them, wgmma.fence is skipped and GMMA operations produce garbage results.
-// Force-enable these macros so the Sm90 GMMA code paths are taken.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
-#if !defined(CUTE_ARCH_MMA_SM90_ENABLED)
-#define CUTE_ARCH_MMA_SM90_ENABLED 1
-#endif
-#if !defined(CUTE_ARCH_MMA_SM90A_ENABLED)
-#define CUTE_ARCH_MMA_SM90A_ENABLED 1
-#endif
-#endif
-
 #include <cutlass/arch/arch.h>
 #include <cutlass/bfloat16.h>
 #include <cutlass/cutlass.h>
@@ -327,9 +313,11 @@ void run_swiglu_elementwise(
 // C-linkage interface
 //
 // Dispatch logic:
-//   cc_major == 10  → Sm100 UMMA+TMEM path (data center Blackwell: B100/B200)
-//   cc_major >=  9  → Sm90 GMMA path (Hopper + consumer Blackwell: RTX 6000 etc.)
-//   else            → unsupported, returns false (host falls back to PyTorch ops)
+//   cc 100-119  → Sm100 UMMA+TMEM path (data center Blackwell: B100/B200)
+//   cc  90-119  → Sm90 GMMA path (Hopper: H100/H200)
+//   cc >= 120   → consumer Blackwell (RTX 6000 etc.): CUTLASS has no Sm120
+//                 bf16 UMMA path; falls back to PyTorch ops
+//   else        → unsupported, returns false (host falls back to PyTorch ops)
 // ---------------------------------------------------------------------------
 
 extern "C" {
@@ -357,7 +345,7 @@ bool cutlass_fused_swiglu_bf16(
     }
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-    if (cc >= 90) {
+    if (cc >= 90 && cc < 120) {
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
@@ -396,7 +384,7 @@ bool cutlass_fused_swiglu_f16(
     }
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-    if (cc >= 90) {
+    if (cc >= 90 && cc < 120) {
         auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
