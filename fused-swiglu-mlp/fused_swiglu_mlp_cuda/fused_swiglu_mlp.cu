@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
@@ -16,13 +17,24 @@
 
 namespace detail {
 
-template <typename ElementAB, typename ElementOut, typename ArchTag, typename EpilogueSchedule>
+// ---------------------------------------------------------------------------
+// Configuration tags for different GPU architecture paths
+// ---------------------------------------------------------------------------
+struct Sm90ConservativeConfig {};
+struct Sm100DatacenterConfig {};
+
+template <typename ElementAB, typename ElementOut, typename ConfigTag>
 struct FusedSwigluGemm;
 
+// ---------------------------------------------------------------------------
+// Sm90 GMMA path — works on Hopper (cc=9.x) and consumer Blackwell (cc=12.x)
+// Uses conservative tile/stage settings to fit in ~96KB shared memory limit
+// of consumer GPUs. Data center Hopper has 227KB so this also works there.
+// ---------------------------------------------------------------------------
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
 
 template <typename ElementAB, typename ElementOut>
-struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative> {
+struct FusedSwigluGemm<ElementAB, ElementOut, Sm90ConservativeConfig> {
     using ElementA = ElementAB;
     using ElementB = ElementAB;
     using ElementC = void;
@@ -41,8 +53,8 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
     static constexpr int AlignmentC = 1;
     static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
 
-    using TileShapeMNK = cute::Shape<cute::_128, cute::_128, cute::_64>;
-    using ClusterShapeMNK = cute::Shape<cute::_2, cute::_1, cute::_1>;
+    using TileShapeMNK = cute::Shape<cute::_64, cute::_128, cute::_64>;
+    using ClusterShapeMNK = cute::Shape<cute::_1, cute::_1, cute::_1>;
 
     using EVT = SwigluEVT<ElementD, ElementAux>;
 
@@ -91,6 +103,85 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
 
 #endif
 
+// ---------------------------------------------------------------------------
+// Sm100 UMMA+TMEM path — data center Blackwell only (B100/B200, cc=10.x)
+// Uses UMMA with TMEM accumulator and 1SM TMA epilogue with EVT fusion.
+// NOT compatible with consumer Blackwell (Sm120) which lacks TMEM.
+// ---------------------------------------------------------------------------
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+
+template <typename ElementAB, typename ElementOut>
+struct FusedSwigluGemm<ElementAB, ElementOut, Sm100DatacenterConfig> {
+    using ElementA = ElementAB;
+    using ElementB = ElementAB;
+    using ElementC = void;
+    using ElementD = ElementOut;
+    using ElementAux = ElementOut;
+    using ElementAccum = float;
+    using ElementCompute = float;
+
+    using LayoutA = cutlass::layout::RowMajor;
+    using LayoutB = cutlass::layout::ColumnMajor;
+    using LayoutC = cutlass::layout::RowMajor;
+    using LayoutD = cutlass::layout::RowMajor;
+
+    static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
+    static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
+    static constexpr int AlignmentC = 1;
+    static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
+
+    using TileShapeMNK = cute::Shape<cute::_64, cute::_128, cute::_64>;
+    using ClusterShapeMNK = cute::Shape<cute::_1, cute::_1, cute::_1>;
+
+    using EVT = SwigluEVT<ElementD, ElementAux>;
+
+    using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+        cutlass::arch::Sm100,
+        cutlass::arch::OpClassTensorOp,
+        TileShapeMNK,
+        ClusterShapeMNK,
+        cutlass::epilogue::collective::EpilogueTileAuto,
+        ElementAccum,
+        ElementCompute,
+        ElementC, LayoutC, AlignmentC,
+        ElementD, LayoutD, AlignmentD,
+        cutlass::epilogue::TmaWarpSpecialized1Sm,
+        EVT
+    >::CollectiveOp;
+
+    using StageCount = cutlass::gemm::collective::StageCount<3>;
+
+    using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+        cutlass::arch::Sm100,
+        cutlass::arch::OpClassTensorOp,
+        ElementA, LayoutA, AlignmentA,
+        ElementB, LayoutB, AlignmentB,
+        ElementAccum,
+        TileShapeMNK,
+        ClusterShapeMNK,
+        StageCount,
+        cutlass::gemm::KernelTmaWarpSpecialized1SmSm100
+    >::CollectiveOp;
+
+    using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+        cute::Shape<int64_t, int64_t, int64_t, int64_t>,
+        CollectiveMainloop,
+        CollectiveEpilogue
+    >;
+
+    using GemmDevice = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+
+    using StrideA = typename GemmKernel::StrideA;
+    using StrideB = typename GemmKernel::StrideB;
+    using StrideC = typename GemmKernel::StrideC;
+    using StrideD = typename GemmKernel::StrideD;
+};
+
+#endif
+
+// ---------------------------------------------------------------------------
+// Elementwise fallback kernel
+// ---------------------------------------------------------------------------
 template <typename Element>
 __global__ void swiglu_elementwise_kernel(
     Element* __restrict__ output,
@@ -107,6 +198,9 @@ __global__ void swiglu_elementwise_kernel(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Generic launch function
+// ---------------------------------------------------------------------------
 template <typename GemmDevice>
 cutlass::Status launch_fused_swiglu_gemm(
     typename GemmDevice::GemmKernel::CollectiveMainloop::ElementA const* ptr_A,
@@ -164,7 +258,12 @@ cutlass::Status launch_fused_swiglu_gemm(
 
     GemmDevice gemm_op;
 
+    fprintf(stderr, "[launch] smem=%d arch_cc=%d\n",
+            GemmDevice::GemmKernel::SharedStorageSize,
+            GemmDevice::GemmKernel::ArchTag::kMinComputeCapability);
+
     cutlass::Status status = gemm_op.can_implement(args);
+    fprintf(stderr, "[launch] can_implement=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -175,17 +274,19 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
+    fprintf(stderr, "[launch] initialize=%d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
+    fprintf(stderr, "[launch] run=%d cuda_err=%d\n", static_cast<int>(status), static_cast<int>(cudaGetLastError()));
     if (workspace) cudaFree(workspace);
     return status;
 }
 
-template <typename ElementAB, typename ElementOut, typename ArchTag, typename EpilogueSchedule>
+template <typename ElementAB, typename ElementOut, typename ConfigTag>
 cutlass::Status run_swiglu_gemm(
     ElementAB const* ptr_A,
     ElementAB const* ptr_B,
@@ -195,7 +296,7 @@ cutlass::Status run_swiglu_gemm(
     const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
-    using Gemm = typename FusedSwigluGemm<ElementAB, ElementOut, ArchTag, EpilogueSchedule>::GemmDevice;
+    using Gemm = typename FusedSwigluGemm<ElementAB, ElementOut, ConfigTag>::GemmDevice;
     return launch_fused_swiglu_gemm<Gemm>(
         ptr_A, ptr_B, ptr_D, ptr_aux,
         M, N, K, device_id, sm_count, stream
@@ -215,6 +316,15 @@ void run_swiglu_elementwise(
 
 } // namespace detail
 
+// ---------------------------------------------------------------------------
+// C-linkage interface
+//
+// Dispatch logic:
+//   cc_major == 10  → Sm100 UMMA+TMEM path (data center Blackwell: B100/B200)
+//   cc_major >=  9  → Sm90 GMMA path (Hopper + consumer Blackwell: RTX 6000 etc.)
+//   else            → unsupported, returns false (host falls back to PyTorch ops)
+// ---------------------------------------------------------------------------
+
 extern "C" {
 
 bool cutlass_fused_swiglu_bf16(
@@ -227,9 +337,21 @@ bool cutlass_fused_swiglu_bf16(
     using ElementAB = cutlass::bfloat16_t;
     using ElementOut = cutlass::bfloat16_t;
 
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+    if (cc >= 100 && cc < 120) {
+        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
+            reinterpret_cast<ElementAB const*>(ptr_A),
+            reinterpret_cast<ElementAB const*>(ptr_B),
+            reinterpret_cast<ElementOut*>(ptr_D),
+            reinterpret_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
+        if (status == cutlass::Status::kSuccess) return true;
+    }
+#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
             reinterpret_cast<ElementOut*>(ptr_D),
@@ -254,9 +376,21 @@ bool cutlass_fused_swiglu_f16(
     using ElementAB = cutlass::half_t;
     using ElementOut = cutlass::half_t;
 
+#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
+    if (cc >= 100 && cc < 120) {
+        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
+            reinterpret_cast<ElementAB const*>(ptr_A),
+            reinterpret_cast<ElementAB const*>(ptr_B),
+            reinterpret_cast<ElementOut*>(ptr_D),
+            reinterpret_cast<ElementOut const*>(ptr_aux),
+            M, N, K, device_id, sm_count, stream
+        );
+        if (status == cutlass::Status::kSuccess) return true;
+    }
+#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
             reinterpret_cast<ElementAB const*>(ptr_A),
             reinterpret_cast<ElementAB const*>(ptr_B),
             reinterpret_cast<ElementOut*>(ptr_D),
