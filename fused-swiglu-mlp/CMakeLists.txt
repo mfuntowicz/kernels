@@ -271,7 +271,7 @@ if(GPU_LANG STREQUAL "CUDA")
     NAME fused_swiglu_mlp
     SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"
     CUDA_CAPABILITIES "${FUSED_SWIGLU_CUDA_CAPABILITIES}"
-    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
+    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17;-DCUTLASS_DEBUG_TRACE_LEVEL=1"
   )
 endif()
 # Include Metal shader compilation utilities if needed
