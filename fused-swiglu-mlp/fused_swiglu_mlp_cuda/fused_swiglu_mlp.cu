@@ -1,4 +1,3 @@
-#include <cstdio>
 #include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
@@ -93,78 +92,6 @@ struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epil
 
 #endif
 
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-
-template <typename ElementAB, typename ElementOut>
-struct FusedSwigluGemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm> {
-    using ElementA = ElementAB;
-    using ElementB = ElementAB;
-    using ElementC = void;
-    using ElementD = ElementOut;
-    using ElementAux = ElementOut;
-    using ElementAccum = float;
-    using ElementCompute = float;
-
-    using LayoutA = cutlass::layout::RowMajor;
-    using LayoutB = cutlass::layout::ColumnMajor;
-    using LayoutC = cutlass::layout::RowMajor;
-    using LayoutD = cutlass::layout::RowMajor;
-
-    static constexpr int AlignmentA = 128 / cutlass::sizeof_bits<ElementA>::value;
-    static constexpr int AlignmentB = 128 / cutlass::sizeof_bits<ElementB>::value;
-    static constexpr int AlignmentC = 1;
-    static constexpr int AlignmentD = 128 / cutlass::sizeof_bits<ElementD>::value;
-
-    using TileShapeMNK = cute::Shape<cute::_256, cute::_128, cute::_64>;
-    using ClusterShapeMNK = cute::Shape<cute::_2, cute::_2, cute::_1>;
-
-    using EVT = SwigluEVT<ElementD, ElementAux>;
-
-    using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-        cutlass::arch::Sm100,
-        cutlass::arch::OpClassTensorOp,
-        TileShapeMNK,
-        ClusterShapeMNK,
-        cutlass::epilogue::collective::EpilogueTileAuto,
-        ElementAccum,
-        ElementCompute,
-        ElementC, LayoutC, AlignmentC,
-        ElementD, LayoutD, AlignmentD,
-        cutlass::epilogue::TmaWarpSpecialized2Sm,
-        EVT
-    >::CollectiveOp;
-
-    using StageCount = cutlass::gemm::collective::StageCountAutoCarveout<
-        static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>;
-
-    using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-        cutlass::arch::Sm100,
-        cutlass::arch::OpClassTensorOp,
-        ElementA, LayoutA, AlignmentA,
-        ElementB, LayoutB, AlignmentB,
-        ElementAccum,
-        TileShapeMNK,
-        ClusterShapeMNK,
-        StageCount,
-        cutlass::gemm::KernelTmaWarpSpecialized2SmSm100
-    >::CollectiveOp;
-
-    using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
-        cute::Shape<int64_t, int64_t, int64_t, int64_t>,
-        CollectiveMainloop,
-        CollectiveEpilogue
-    >;
-
-    using GemmDevice = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
-
-    using StrideA = typename GemmKernel::StrideA;
-    using StrideB = typename GemmKernel::StrideB;
-    using StrideC = typename GemmKernel::StrideC;
-    using StrideD = typename GemmKernel::StrideD;
-};
-
-#endif
-
 template <typename Element>
 __global__ void swiglu_elementwise_kernel(
     Element* __restrict__ output,
@@ -239,7 +166,6 @@ cutlass::Status launch_fused_swiglu_gemm(
     GemmDevice gemm_op;
 
     cutlass::Status status = gemm_op.can_implement(args);
-    fprintf(stderr, "[cutlass] can_implement: %d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -250,14 +176,12 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
-    fprintf(stderr, "[cutlass] initialize: %d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
-    fprintf(stderr, "[cutlass] run: %d\n", static_cast<int>(status));
     if (workspace) cudaFree(workspace);
     return status;
 }
@@ -313,34 +237,22 @@ bool cutlass_fused_swiglu_bf16(
 ) {
     using ElementAB = cutlass::bfloat16_t;
     using ElementOut = cutlass::bfloat16_t;
-    auto status = cutlass::Status::kErrorInternal;
 
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-    if (cc >= 100) {
-        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-            static_cast<ElementAB const*>(ptr_A),
-            static_cast<ElementAB const*>(ptr_B),
-            static_cast<ElementOut*>(ptr_D),
-            static_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-    } else
-#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-    {
-        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-            static_cast<ElementAB const*>(ptr_A),
-            static_cast<ElementAB const*>(ptr_B),
-            static_cast<ElementOut*>(ptr_D),
-            static_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-    }
-#else
-    { return false; }
-#endif
-
+    (void)cc;
+    auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+        static_cast<ElementAB const*>(ptr_A),
+        static_cast<ElementAB const*>(ptr_B),
+        static_cast<ElementOut*>(ptr_D),
+        static_cast<ElementOut const*>(ptr_aux),
+        M, N, K, device_id, sm_count, stream
+    );
     return status == cutlass::Status::kSuccess;
+#else
+    (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
+    (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
+    return false;
+#endif
 }
 
 bool cutlass_fused_swiglu_f16(
@@ -352,34 +264,22 @@ bool cutlass_fused_swiglu_f16(
 ) {
     using ElementAB = cutlass::half_t;
     using ElementOut = cutlass::half_t;
-    auto status = cutlass::Status::kErrorInternal;
 
-#if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
-    if (cc >= 100) {
-        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm100, cutlass::epilogue::TmaWarpSpecialized2Sm>(
-            static_cast<ElementAB const*>(ptr_A),
-            static_cast<ElementAB const*>(ptr_B),
-            static_cast<ElementOut*>(ptr_D),
-            static_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-    } else
-#endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
-    {
-        status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
-            static_cast<ElementAB const*>(ptr_A),
-            static_cast<ElementAB const*>(ptr_B),
-            static_cast<ElementOut*>(ptr_D),
-            static_cast<ElementOut const*>(ptr_aux),
-            M, N, K, device_id, sm_count, stream
-        );
-    }
-#else
-    { return false; }
-#endif
-
+    (void)cc;
+    auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, cutlass::arch::Sm90, cutlass::epilogue::TmaWarpSpecializedCooperative>(
+        static_cast<ElementAB const*>(ptr_A),
+        static_cast<ElementAB const*>(ptr_B),
+        static_cast<ElementOut*>(ptr_D),
+        static_cast<ElementOut const*>(ptr_aux),
+        M, N, K, device_id, sm_count, stream
+    );
     return status == cutlass::Status::kSuccess;
+#else
+    (void)ptr_A; (void)ptr_B; (void)ptr_D; (void)ptr_aux;
+    (void)M; (void)N; (void)K; (void)cc; (void)device_id; (void)sm_count; (void)stream;
+    return false;
+#endif
 }
 
 void swiglu_elementwise_bf16(
@@ -389,7 +289,7 @@ void swiglu_elementwise_bf16(
 ) {
     detail::run_swiglu_elementwise<cutlass::bfloat16_t>(
         static_cast<cutlass::bfloat16_t*>(output),
-        static_cast<cutlass::bfloat16_t const*>(gate),
+        static_cast<cutlass::bfloat16_t*>(gate),
         static_cast<cutlass::bfloat16_t const*>(up),
         M, N, stream
     );
@@ -402,7 +302,7 @@ void swiglu_elementwise_f16(
 ) {
     detail::run_swiglu_elementwise<cutlass::half_t>(
         static_cast<cutlass::half_t*>(output),
-        static_cast<cutlass::half_t const*>(gate),
+        static_cast<cutlass::half_t*>(gate),
         static_cast<cutlass::half_t const*>(up),
         M, N, stream
     );
