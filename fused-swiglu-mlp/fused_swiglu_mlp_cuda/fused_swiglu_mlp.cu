@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cuda_runtime.h>
 
 #include <cutlass/arch/arch.h>
@@ -238,6 +239,7 @@ cutlass::Status launch_fused_swiglu_gemm(
     GemmDevice gemm_op;
 
     cutlass::Status status = gemm_op.can_implement(args);
+    fprintf(stderr, "[cutlass] can_implement: %d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) return status;
 
     const auto workspace_size = GemmDevice::get_workspace_size(args);
@@ -248,12 +250,14 @@ cutlass::Status launch_fused_swiglu_gemm(
     }
 
     status = gemm_op.initialize(args, workspace, stream);
+    fprintf(stderr, "[cutlass] initialize: %d\n", static_cast<int>(status));
     if (status != cutlass::Status::kSuccess) {
         if (workspace) cudaFree(workspace);
         return status;
     }
 
     status = gemm_op.run(stream);
+    fprintf(stderr, "[cutlass] run: %d\n", static_cast<int>(status));
     if (workspace) cudaFree(workspace);
     return status;
 }

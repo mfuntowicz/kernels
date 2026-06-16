@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cutlass/bfloat16.h>
@@ -68,6 +69,9 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
     const auto device_id = at::cuda::current_device();
     const auto sm_count = static_cast<int>(props->multiProcessorCount);
 
+    fprintf(stderr, "[fused_swiglu_mlp] cc=%d device=%d sm_count=%d dtype=%s M=%ld N=%ld K=%ld\n",
+            cc, device_id, sm_count, x.dtype().name(), (long)M, (long)N, (long)K);
+
     if (bool use_cutlass_fusion = (cc >= 90) && (x.scalar_type() != c10::kFloat)) {
         const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
 
@@ -84,9 +88,14 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
                 M, N, K, cc, device_id, sm_count, stream);
         }
 
-        if (ok)
+        fprintf(stderr, "[fused_swiglu_mlp] CUTLASS fusion attempted: ok=%d\n", ok);
+        if (ok) {
+            cudaError_t err = cudaGetLastError();
+            fprintf(stderr, "[fused_swiglu_mlp] cudaGetLastError after ok: %s\n", cudaGetErrorString(err));
             return out;
+        }
 
+        fprintf(stderr, "[fused_swiglu_mlp] CUTLASS fusion FAILED, using PyTorch fallback\n");
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         at::silu_out(out, gate);
         out.mul_(up);
