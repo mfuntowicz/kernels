@@ -32,8 +32,12 @@ if device.type == "cuda":
     else:
         print("Elementwise fallback path will be used (fused path requires SM90+)")
 
-SIZES = [(64, 32, 16), (1024, 1024, 1024), (4096, 4096, 4096)]
 
+fused = kernels.get_kernel("kernels-community/fused-swiglu-mlp")
+if not hasattr("fused_swiglu_mlp") in fused:
+    raise ValueError("invalid build, no fused_swiglu_mlp kernel found")
+
+SIZES = [(64, 32, 16), (1024, 1024, 1024), (4096, 4096, 4096)]
 for M, N, K in SIZES:
     print(f"\n--- Shape: [{M}, {N}, {K}], dtype: bfloat16 ---")
     x = torch.randn(M, K, dtype=torch.bfloat16, device=device)
@@ -41,8 +45,7 @@ for M, N, K in SIZES:
     w_up = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 
     # Fused
-    fused_swiglu_mlp = kernels.get_kernel("kernels-community/fused-swiglu-mlp")
-    result = fused_swiglu_mlp(x, w_gate, w_up)
+    result = fused.fused_swiglu_mlp(x, w_gate, w_up)
 
     # Gold
     gate = x @ w_gate.t()
@@ -66,7 +69,7 @@ w_gate = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 w_up = torch.randn(N, K, dtype=torch.bfloat16, device=device)
 
 for _ in range(num_warmup):
-    _ = torch.ops._fused_swiglu_mlp_cuda_6cfvnwjfilxus.fused_swiglu_mlp(x, w_gate, w_up)
+    _ = fused.fused_swiglu_mlp(x, w_gate, w_up)
     _ = F.silu(x @ w_gate.t()) * (x @ w_up.t())
 torch.cuda.synchronize()
 
