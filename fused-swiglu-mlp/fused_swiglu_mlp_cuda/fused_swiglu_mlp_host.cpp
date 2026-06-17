@@ -19,6 +19,34 @@ bool cutlass_fused_swiglu_f16(
     int cc, int device_id, int sm_count,
     cudaStream_t stream);
 
+bool cutlass_fused_swiglu_fp8_bf16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
+bool cutlass_fused_swiglu_fp8_f16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
+bool cutlass_fused_swiglu_sm80_bf16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
+bool cutlass_fused_swiglu_sm80_f16(
+    const void* ptr_A, const void* ptr_B,
+    void* ptr_D, const void* ptr_aux,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
 void swiglu_elementwise_bf16(
     void* output, const void* gate, const void* up,
     int64_t M, int64_t N, cudaStream_t stream);
@@ -86,6 +114,66 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
         if (ok)
             return out;
 
+        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
+        if (x.scalar_type() == c10::kBFloat16) {
+            swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        } else {
+            swiglu_elementwise_f16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        }
+    } else if (cc >= 80 && cc < 90 && (x.scalar_type() == c10::kBFloat16 || x.scalar_type() == c10::kHalf)) {
+        // Sm80/Sm89 (Ampere/Ada): old-style GemmUniversalWithVisitor + EVT fusion.
+        // Fuses SiLU(gate)*up into the gate GEMM epilogue, saving one M×N read+write.
+        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
+
+        bool ok = false;
+        if (x.scalar_type() == c10::kBFloat16) {
+            ok = cutlass_fused_swiglu_sm80_bf16(
+                x.data_ptr(), w_gate.data_ptr(),
+                out.data_ptr(), up.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        } else if (x.scalar_type() == c10::kHalf) {
+            ok = cutlass_fused_swiglu_sm80_f16(
+                x.data_ptr(), w_gate.data_ptr(),
+                out.data_ptr(), up.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        }
+
+        if (ok)
+            return out;
+
+        // Fallback: two bf16 GEMMs + fused elementwise
+        const auto gate = at::matmul(x, w_gate.transpose(0, 1));
+        if (x.scalar_type() == c10::kBFloat16) {
+            swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        } else {
+            swiglu_elementwise_f16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
+        }
+    } else if (cc >= 120 && (x.scalar_type() == c10::kBFloat16 || x.scalar_type() == c10::kHalf)) {
+        // Sm120 (consumer Blackwell): try FP8 fused GEMM + SwiGLU EVT path.
+        // CUTLASS has no Sm120 bf16 UMMA, so we convert to FP8 E4M3 for the
+        // fused second GEMM. The first GEMM (up) stays bf16 via cuBLAS.
+        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
+
+        const auto x_fp8 = x.to(at::kFloat8_e4m3fn);
+        const auto w_gate_fp8 = w_gate.to(at::kFloat8_e4m3fn);
+
+        bool ok = false;
+        if (x.scalar_type() == c10::kBFloat16) {
+            ok = cutlass_fused_swiglu_fp8_bf16(
+                x_fp8.data_ptr(), w_gate_fp8.data_ptr(),
+                out.data_ptr(), up.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        } else if (x.scalar_type() == c10::kHalf) {
+            ok = cutlass_fused_swiglu_fp8_f16(
+                x_fp8.data_ptr(), w_gate_fp8.data_ptr(),
+                out.data_ptr(), up.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        }
+
+        if (ok)
+            return out;
+
+        // Fallback: two bf16 GEMMs + fused elementwise
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         if (x.scalar_type() == c10::kBFloat16) {
             swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);

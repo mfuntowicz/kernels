@@ -211,7 +211,7 @@ if (NOT NvidiaCutlass_FOUND)
   set(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
 
 # Set CUTLASS_REVISION manually -- its revision detection doesn't work in this case.
-  set(CUTLASS_REVISION "v4.4.2" CACHE STRING "CUTLASS revision to use")
+  set(CUTLASS_REVISION "v4.5.0" CACHE STRING "CUTLASS revision to use")
 
 
 # Use the specified CUTLASS source directory for compilation if CUTLASS_SRC_DIR is provided
@@ -284,6 +284,25 @@ if(GPU_LANG STREQUAL "CUDA")
     NAME swiglu_elementwise
     SOURCES "fused_swiglu_mlp_cuda/swiglu_elementwise.cu"
     CUDA_CAPABILITIES "${ELEMENTWISE_CUDA_CAPABILITIES}"
+    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
+  )
+  # Sm120 FP8 CUTLASS path — compiled ONLY for 12.0a to avoid wgmma PTX
+  # conflicts from the Sm90 GMMA code in the main .cu file.
+  set(SM120_FP8_CUDA_CAPABILITIES "12.0a")
+  cuda_kernel_component(SRC
+    NAME fused_swiglu_mlp_sm120_fp8
+    SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp_sm120_fp8.cu"
+    CUDA_CAPABILITIES "${SM120_FP8_CUDA_CAPABILITIES}"
+    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
+  )
+  # Sm80 EVT path — old-style GemmUniversalWithVisitor with EVT epilogue
+  # fusion. Compiled only for 8.0a-8.9a (Ampere/Ada) to avoid Sm70 issues
+  # where Sm80 MMA specializations don't exist.
+  set(SM80_EVT_CUDA_CAPABILITIES "8.0;8.6;8.7;8.9")
+  cuda_kernel_component(SRC
+    NAME fused_swiglu_mlp_sm80_evt
+    SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp_sm80_evt.cu"
+    CUDA_CAPABILITIES "${SM80_EVT_CUDA_CAPABILITIES}"
     CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
   )
 endif()
