@@ -305,6 +305,17 @@ if(GPU_LANG STREQUAL "CUDA")
     CUDA_CAPABILITIES "${SM80_EVT_CUDA_CAPABILITIES}"
     CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
   )
+  # Sm80 DualGemm path — CUTLASS example 45 DualGemm that fuses both GEMMs
+  # (X@B0 and X@B1) sharing the X matrix read, with LeftSiLUAndMul epilogue.
+  # kStoreD0=kStoreD1=false eliminates intermediate M×N stores.
+  set(SM80_DUAL_CUDA_CAPABILITIES "8.0;8.6;8.7;8.9")
+  cuda_kernel_component(SRC
+    NAME fused_swiglu_mlp_sm80_dual
+    SOURCES "fused_swiglu_mlp_cuda/fused_swiglu_mlp_sm80_dual.cu"
+    INCLUDES "${cutlass_SOURCE_DIR}/examples/45_dual_gemm"
+    CUDA_CAPABILITIES "${SM80_DUAL_CUDA_CAPABILITIES}"
+    CUDA_FLAGS "-std=c++20;-Xcompiler=-std=c++17"
+  )
 endif()
 # Include Metal shader compilation utilities if needed
 if(GPU_LANG STREQUAL "METAL")

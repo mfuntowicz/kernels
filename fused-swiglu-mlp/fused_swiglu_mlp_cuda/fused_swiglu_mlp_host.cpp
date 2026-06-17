@@ -47,6 +47,20 @@ bool cutlass_fused_swiglu_sm80_f16(
     int cc, int device_id, int sm_count,
     cudaStream_t stream);
 
+bool cutlass_fused_swiglu_sm80_dual_bf16(
+    const void* ptr_A, const void* ptr_B0, const void* ptr_B1,
+    void* ptr_D2,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
+bool cutlass_fused_swiglu_sm80_dual_f16(
+    const void* ptr_A, const void* ptr_B0, const void* ptr_B1,
+    void* ptr_D2,
+    int64_t M, int64_t N, int64_t K,
+    int cc, int device_id, int sm_count,
+    cudaStream_t stream);
+
 void swiglu_elementwise_bf16(
     void* output, const void* gate, const void* up,
     int64_t M, int64_t N, cudaStream_t stream);
@@ -121,11 +135,27 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
             swiglu_elementwise_f16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
         }
     } else if (cc >= 80 && cc < 90 && (x.scalar_type() == c10::kBFloat16 || x.scalar_type() == c10::kHalf)) {
-        // Sm80/Sm89 (Ampere/Ada): old-style GemmUniversalWithVisitor + EVT fusion.
-        // Fuses SiLU(gate)*up into the gate GEMM epilogue, saving one M×N read+write.
-        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
-
+        // Sm80/Sm89 (Ampere/Ada): try DualGemm first (fuses both GEMMs sharing X,
+        // computes SiLU(gate)*up in the dual epilogue, no intermediate stores).
         bool ok = false;
+        if (x.scalar_type() == c10::kBFloat16) {
+            ok = cutlass_fused_swiglu_sm80_dual_bf16(
+                x.data_ptr(), w_gate.data_ptr(), w_up.data_ptr(),
+                out.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        } else if (x.scalar_type() == c10::kHalf) {
+            ok = cutlass_fused_swiglu_sm80_dual_f16(
+                x.data_ptr(), w_gate.data_ptr(), w_up.data_ptr(),
+                out.data_ptr(),
+                M, N, K, cc, device_id, sm_count, stream);
+        }
+
+        if (ok)
+            return out;
+
+        // Fallback 1: EVT path (fuses SiLU*multiply into gate GEMM epilogue,
+        // but requires pre-computing up via cuBLAS).
+        const torch::Tensor up = at::matmul(x, w_up.transpose(0, 1));
         if (x.scalar_type() == c10::kBFloat16) {
             ok = cutlass_fused_swiglu_sm80_bf16(
                 x.data_ptr(), w_gate.data_ptr(),
@@ -141,7 +171,7 @@ torch::Tensor fused_swiglu_mlp(torch::Tensor const& x, torch::Tensor const& w_ga
         if (ok)
             return out;
 
-        // Fallback: two bf16 GEMMs + fused elementwise
+        // Fallback 2: two bf16 GEMMs + fused elementwise
         const auto gate = at::matmul(x, w_gate.transpose(0, 1));
         if (x.scalar_type() == c10::kBFloat16) {
             swiglu_elementwise_bf16(out.data_ptr(), gate.data_ptr(), up.data_ptr(), M, N, stream);
