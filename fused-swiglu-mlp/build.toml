@@ -17,5 +17,5 @@ src = [
 
 [kernel.fused_swiglu_mlp]
 backend = "cuda"
-depends = ["cutlass_4_0", "torch"]
+depends = ["cutlass_4_5", "torch"]
 src = ["fused_swiglu_mlp_cuda/fused_swiglu_mlp.cu"]

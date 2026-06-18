@@ -1,2 +1,10 @@
-build
-.so
+# Idea
+.idea/
+
+# lock
+*.lock
+
+# Artifact
+build/
+tests/
+*.so
