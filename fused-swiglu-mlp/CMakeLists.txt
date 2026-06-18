@@ -368,6 +368,25 @@ if(GPU_LANG STREQUAL "METAL")
 endif()
 
 
+# C++ unit test executable — links against the extension .so and calls
+# fused_swiglu_mlp directly (no Python involvement).
+# MODULE_LIBRARY can't be linked via target_link_libraries; the .so also
+# lacks the "lib" prefix so -l won't find it.  Pass the full path instead.
+# The .so pulls in Python symbols (PyModule_Create2) so we need libpython.
+if(GPU_LANG STREQUAL "CUDA")
+  find_package(Python3 COMPONENTS Development REQUIRED)
+  add_executable(test_fused_swiglu_mlp tests/test_fused_swiglu_mlp.cpp)
+  target_link_libraries(test_fused_swiglu_mlp PRIVATE torch Python3::Python)
+  target_link_options(test_fused_swiglu_mlp PRIVATE
+    "$<TARGET_FILE:${OPS_NAME}>")
+  add_dependencies(test_fused_swiglu_mlp ${OPS_NAME})
+  target_include_directories(test_fused_swiglu_mlp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/torch-ext
+    ${CUTLASS_INCLUDE_DIR}
+    ${CUTLASS_INCLUDE_DIR}/../tools/util/include)
+  set_property(TARGET test_fused_swiglu_mlp PROPERTY CXX_STANDARD 17)
+endif()
+
 # Add kernels_install target for huggingface/kernels library layout
 add_kernels_install_target(${OPS_NAME} "fused_swiglu_mlp" "${BUILD_VARIANT_NAME}"
     DATA_EXTENSIONS ""

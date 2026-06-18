@@ -130,7 +130,7 @@ cutlass::Status launch_sm80_evt(
     typename GemmDevice::ElementB const* ptr_B,
     typename GemmDevice::ElementC* ptr_D,
     typename GemmDevice::ElementC const* ptr_aux,
-    int64_t M, int64_t N, int64_t K,
+    const int64_t M, const int64_t N, const int64_t K,
     int sm_count,
     cudaStream_t stream
 ) {
@@ -159,14 +159,14 @@ cutlass::Status launch_sm80_evt(
         ptr_B,
         nullptr,
         nullptr,
-        static_cast<int64_t>(M * K),
-        static_cast<int64_t>(N * K),
+        M * K,
+        N * K,
         0,
-        static_cast<int64_t>(M * N),
-        static_cast<int64_t>(K),
-        static_cast<int64_t>(K),
-        static_cast<int64_t>(N),
-        static_cast<int64_t>(N)
+        M * N,
+        K,
+        K,
+        N,
+        N
     );
 
     GemmDevice gemm_op;
@@ -199,17 +199,17 @@ extern "C" {
 bool cutlass_fused_swiglu_sm80_bf16(
     const void* ptr_A, const void* ptr_B,
     void* ptr_D, const void* ptr_aux,
-    int64_t M, int64_t N, int64_t K,
-    int cc, int device_id, int sm_count,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
     (void)cc; (void)device_id;
     using Gemm = detail::FusedSwigluGemmSm80<cutlass::bfloat16_t, cutlass::bfloat16_t>;
-    auto status = detail::launch_sm80_evt<typename Gemm::GemmDevice>(
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_A),
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_B),
-        reinterpret_cast<cutlass::bfloat16_t*>(ptr_D),
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_aux),
+    const auto status = detail::launch_sm80_evt<typename Gemm::GemmDevice>(
+        static_cast<cutlass::bfloat16_t const*>(ptr_A),
+        static_cast<cutlass::bfloat16_t const*>(ptr_B),
+        static_cast<cutlass::bfloat16_t*>(ptr_D),
+        static_cast<cutlass::bfloat16_t const*>(ptr_aux),
         M, N, K, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;
@@ -218,17 +218,17 @@ bool cutlass_fused_swiglu_sm80_bf16(
 bool cutlass_fused_swiglu_sm80_f16(
     const void* ptr_A, const void* ptr_B,
     void* ptr_D, const void* ptr_aux,
-    int64_t M, int64_t N, int64_t K,
-    int cc, int device_id, int sm_count,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
     (void)cc; (void)device_id;
     using Gemm = detail::FusedSwigluGemmSm80<cutlass::half_t, cutlass::half_t>;
-    auto status = detail::launch_sm80_evt<typename Gemm::GemmDevice>(
-        reinterpret_cast<cutlass::half_t const*>(ptr_A),
-        reinterpret_cast<cutlass::half_t const*>(ptr_B),
-        reinterpret_cast<cutlass::half_t*>(ptr_D),
-        reinterpret_cast<cutlass::half_t const*>(ptr_aux),
+    const auto status = detail::launch_sm80_evt<typename Gemm::GemmDevice>(
+        static_cast<cutlass::half_t const*>(ptr_A),
+        static_cast<cutlass::half_t const*>(ptr_B),
+        static_cast<cutlass::half_t*>(ptr_D),
+        static_cast<cutlass::half_t const*>(ptr_aux),
         M, N, K, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;

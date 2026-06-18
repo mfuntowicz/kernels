@@ -212,10 +212,10 @@ bool cutlass_fused_swiglu_fp8_bf16(
 ) {
     using ElementOut = cutlass::bfloat16_t;
     auto status = detail::run_swiglu_gemm_fp8<ElementOut>(
-        reinterpret_cast<cutlass::float_e4m3_t const*>(ptr_A),
-        reinterpret_cast<cutlass::float_e4m3_t const*>(ptr_B),
-        reinterpret_cast<ElementOut*>(ptr_D),
-        reinterpret_cast<ElementOut const*>(ptr_aux),
+        static_cast<cutlass::float_e4m3_t const*>(ptr_A),
+        static_cast<cutlass::float_e4m3_t const*>(ptr_B),
+        static_cast<ElementOut*>(ptr_D),
+        static_cast<ElementOut const*>(ptr_aux),
         M, N, K, device_id, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;
@@ -230,10 +230,10 @@ bool cutlass_fused_swiglu_fp8_f16(
 ) {
     using ElementOut = cutlass::half_t;
     auto status = detail::run_swiglu_gemm_fp8<ElementOut>(
-        reinterpret_cast<cutlass::float_e4m3_t const*>(ptr_A),
-        reinterpret_cast<cutlass::float_e4m3_t const*>(ptr_B),
-        reinterpret_cast<ElementOut*>(ptr_D),
-        reinterpret_cast<ElementOut const*>(ptr_aux),
+        static_cast<cutlass::float_e4m3_t const*>(ptr_A),
+        static_cast<cutlass::float_e4m3_t const*>(ptr_B),
+        static_cast<ElementOut*>(ptr_D),
+        static_cast<ElementOut const*>(ptr_aux),
         M, N, K, device_id, sm_count, stream
     );
     return status == cutlass::Status::kSuccess;

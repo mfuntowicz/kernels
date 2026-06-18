@@ -56,7 +56,7 @@ struct FusedSwigluDualGemmSm80 {
         cutlass::arch::Sm80,
         ThreadblockShape, WarpShape, InstructionShape,
         EpilogueOutputOp0, EpilogueOutputOp1, EpilogueOutputOp2,
-        cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
+        cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<4>,
         kStages, kStoreD0, kStoreD1, kSplitKSerial
     >;
 };
@@ -67,7 +67,7 @@ bool launch_dual_gemm(
     typename DualGemmDevice::ElementB const* ptr_B0,
     typename DualGemmDevice::ElementB const* ptr_B1,
     typename DualGemmDevice::ElementC* ptr_D2,
-    int64_t M, int64_t N, int64_t K,
+    const int64_t M, const int64_t N, const int64_t K,
     cudaStream_t stream
 ) {
     auto problem_size = cutlass::gemm::GemmCoord(
@@ -124,17 +124,17 @@ extern "C" {
 bool cutlass_fused_swiglu_sm80_dual_bf16(
     const void* ptr_A, const void* ptr_B0, const void* ptr_B1,
     void* ptr_D2,
-    int64_t M, int64_t N, int64_t K,
-    int cc, int device_id, int sm_count,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
     (void)cc; (void)device_id; (void)sm_count;
     using Gemm = detail::FusedSwigluDualGemmSm80<cutlass::bfloat16_t, cutlass::bfloat16_t>;
     return detail::launch_dual_gemm<typename Gemm::DualGemm>(
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_A),
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_B0),
-        reinterpret_cast<cutlass::bfloat16_t const*>(ptr_B1),
-        reinterpret_cast<cutlass::bfloat16_t*>(ptr_D2),
+        static_cast<cutlass::bfloat16_t const*>(ptr_A),
+        static_cast<cutlass::bfloat16_t const*>(ptr_B0),
+        static_cast<cutlass::bfloat16_t const*>(ptr_B1),
+        static_cast<cutlass::bfloat16_t*>(ptr_D2),
         M, N, K, stream
     );
 }
@@ -142,17 +142,17 @@ bool cutlass_fused_swiglu_sm80_dual_bf16(
 bool cutlass_fused_swiglu_sm80_dual_f16(
     const void* ptr_A, const void* ptr_B0, const void* ptr_B1,
     void* ptr_D2,
-    int64_t M, int64_t N, int64_t K,
-    int cc, int device_id, int sm_count,
+    const int64_t M, const int64_t N, const int64_t K,
+    const int cc, const int device_id, const int sm_count,
     cudaStream_t stream
 ) {
     (void)cc; (void)device_id; (void)sm_count;
     using Gemm = detail::FusedSwigluDualGemmSm80<cutlass::half_t, cutlass::half_t>;
     return detail::launch_dual_gemm<typename Gemm::DualGemm>(
-        reinterpret_cast<cutlass::half_t const*>(ptr_A),
-        reinterpret_cast<cutlass::half_t const*>(ptr_B0),
-        reinterpret_cast<cutlass::half_t const*>(ptr_B1),
-        reinterpret_cast<cutlass::half_t*>(ptr_D2),
+        static_cast<cutlass::half_t const*>(ptr_A),
+        static_cast<cutlass::half_t const*>(ptr_B0),
+        static_cast<cutlass::half_t const*>(ptr_B1),
+        static_cast<cutlass::half_t*>(ptr_D2),
         M, N, K, stream
     );
 }

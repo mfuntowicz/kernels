@@ -304,11 +304,11 @@ bool cutlass_fused_swiglu_bf16(
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
     if (cc >= 100 && cc < 120) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
+        const auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
         if (status == cutlass::Status::kSuccess) return true;
@@ -316,11 +316,11 @@ bool cutlass_fused_swiglu_bf16(
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90 && cc < 120) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
+        const auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
         return status == cutlass::Status::kSuccess;
@@ -343,11 +343,11 @@ bool cutlass_fused_swiglu_f16(
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)
     if (cc >= 100 && cc < 120) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
+        const auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm100DatacenterConfig>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
         if (status == cutlass::Status::kSuccess) return true;
@@ -355,11 +355,11 @@ bool cutlass_fused_swiglu_f16(
 #endif
 #if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED)
     if (cc >= 90 && cc < 120) {
-        auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
-            reinterpret_cast<ElementAB const*>(ptr_A),
-            reinterpret_cast<ElementAB const*>(ptr_B),
-            reinterpret_cast<ElementOut*>(ptr_D),
-            reinterpret_cast<ElementOut const*>(ptr_aux),
+        const auto status = detail::run_swiglu_gemm<ElementAB, ElementOut, detail::Sm90ConservativeConfig>(
+            static_cast<ElementAB const*>(ptr_A),
+            static_cast<ElementAB const*>(ptr_B),
+            static_cast<ElementOut*>(ptr_D),
+            static_cast<ElementOut const*>(ptr_aux),
             M, N, K, device_id, sm_count, stream
         );
         return status == cutlass::Status::kSuccess;
